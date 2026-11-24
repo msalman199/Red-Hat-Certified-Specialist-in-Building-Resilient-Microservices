@@ -1,0 +1,487 @@
+Lab: Test Traffic Mirroring for Dark Launches
+Objectives
+By the end of this lab, students will be able to:
+
+Explain the concept of traffic mirroring and its role in safe dark launches
+Build a containerized environment that duplicates live traffic to a staging service without affecting production responses
+Use monitoring and scripted validation to confirm production isolation while a new feature is tested in staging
+Analyze response-time and success-rate data to compare production and staging performance
+Troubleshoot common traffic-mirroring configuration issues
+Prerequisites
+Before starting this lab, students should have:
+
+Basic Linux command-line skills
+Familiarity with Docker and Docker Compose
+Basic understanding of HTTP, ports, and reverse proxies
+Basic Python familiarity (reading async code, not writing it from scratch)
+This lab assumes a clean Ubuntu 22.04 LTS machine (or equivalent) with Docker and Docker Compose already available. If they are not installed, install them and the remaining dependencies with:
+
+sudo apt update
+sudo apt install -y docker.io docker-compose-plugin python3-pip jq curl
+sudo systemctl enable --now docker
+sudo usermod -aG docker $USER
+pip3 install --user aiohttp
+Log out and back in (or run newgrp docker) after the usermod command so your shell picks up Docker group permissions.
+
+All work in this lab happens inside your own isolated practice environment. You are only mirroring synthetic traffic that you generate yourself against containers you own; no external systems or real user data are involved.
+
+Task 1: Build a Production and Staging Environment with Traffic Mirroring
+Subtask 1.1: Create the Application Files
+Create the lab directory structure:
+mkdir -p ~/traffic-mirror-lab/{production,staging,config}
+cd ~/traffic-mirror-lab
+Create the production application page:
+cat > production/index.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Production App - v1.0</title>
+    <style>
+        body { font-family: Arial; background-color: #e8f5e8; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; text-align: center; }
+        .version { color: #2d5a2d; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Production Application</h1>
+        <p class="version">Version 1.0 - Stable Release</p>
+        <p>This page is served to real users.</p>
+    </div>
+</body>
+</html>
+EOF
+Create the staging application page, which contains a new feature under dark launch:
+cat > staging/index.html << 'EOF'
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Staging App - v2.0</title>
+    <style>
+        body { font-family: Arial; background-color: #fff3cd; padding: 20px; }
+        .container { max-width: 600px; margin: 0 auto; text-align: center; }
+        .version { color: #856404; font-weight: bold; }
+        .new-feature { background-color: #d4edda; padding: 10px; margin: 10px 0; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Staging Application</h1>
+        <p class="version">Version 2.0 - New Feature (Dark Launch)</p>
+        <div class="new-feature">
+            <h3>New Feature: Enhanced Analytics</h3>
+            <p>This feature is only reachable via mirrored traffic in staging.</p>
+        </div>
+    </div>
+</body>
+</html>
+EOF
+Create the Nginx configuration for production:
+cat > config/production-nginx.conf << 'EOF'
+server {
+    listen 80;
+    server_name localhost;
+
+    access_log /var/log/nginx/access.log combined;
+    error_log /var/log/nginx/error.log;
+
+    location / {
+        root /usr/share/nginx/html;
+        index index.html;
+        try_files $uri $uri/ =404;
+    }
+
+    location /api/test {
+        add_header Content-Type application/json;
+        return 200 '{"status": "success", "version": "1.0", "server": "production"}';
+    }
+
+    location /health {
+        add_header Content-Type application/json;
+        return 200 '{"status": "healthy", "service": "production"}';
+    }
+}
+EOF
+Create the Nginx configuration for staging, including the new analytics endpoint that does not exist in production:
+cat > config/staging-nginx.conf << 'EOF'
+server {
+    listen 80;
+    server_name localhost;
+
+    access_log /var/log/nginx/access.log combined;
+    error_log /var/log/nginx/error.log;
+
+    location / {
+        root /usr/share/nginx/html;
+        index index.html;
+        try_files $uri $uri/ =404;
+    }
+
+    location /api/test {
+        add_header Content-Type application/json;
+        return 200 '{"status": "success", "version": "2.0", "server": "staging"}';
+    }
+
+    location /api/analytics {
+        add_header Content-Type application/json;
+        return 200 '{"status": "success", "feature": "enhanced_analytics", "users": 1250, "sessions": 3400}';
+    }
+
+    location /health {
+        add_header Content-Type application/json;
+        return 200 '{"status": "healthy", "service": "staging"}';
+    }
+}
+EOF
+Deliverable: the production/, staging/, and config/ directories contain the five files above. Confirm with find ~/traffic-mirror-lab -type f, which should list production/index.html, staging/index.html, config/production-nginx.conf, and config/staging-nginx.conf.
+
+Subtask 1.2: Build the Traffic Mirror Service
+The mirror is a small asynchronous Python proxy. It always returns the production response to the caller, and separately fires a copy of the same request at staging in the background so staging performance can be observed without ever affecting what a real user sees.
+
+Create the mirror application:
+cat > config/traffic-mirror.py << 'EOF'
+#!/usr/bin/env python3
+"""
+Traffic Mirroring Proxy for Dark Launches.
+Forwards every request to production for the real response, and
+mirrors a copy of the same request to staging in the background.
+"""
+
+import asyncio
+import logging
+import json
+from datetime import datetime
+
+import aiohttp
+from aiohttp import web
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("traffic-mirror")
+
+PRODUCTION_URL = "http://production-app:80"
+STAGING_URL = "http://staging-app:80"
+
+stats = {
+    "total_requests": 0,
+    "production_requests": 0,
+    "staging_requests": 0,
+    "errors": 0,
+}
+
+
+async def forward_to_staging(method, path, headers, body):
+    """Fire-and-forget mirror copy sent to staging."""
+    url = f"{STAGING_URL}{path}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.request(
+                method, url, headers=headers, data=body,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                stats["staging_requests"] += 1
+                logger.info("Mirrored to staging: %s %s -> %s", method, path, response.status)
+    except Exception as exc:
+        stats["errors"] += 1
+        logger.error("Error mirroring to staging: %s", exc)
+
+
+async def handle_request(request):
+    stats["total_requests"] += 1
+
+    method = request.method
+    path = request.path_qs
+    headers = dict(request.headers)
+    headers.pop("Host", None)
+    headers.pop("Connection", None)
+
+    body = await request.read()
+
+    # Send the mirrored copy to staging without waiting for it.
+    asyncio.create_task(forward_to_staging(method, path, dict(headers), body))
+
+    # Forward to production and return that response to the caller.
+    url = f"{PRODUCTION_URL}{path}"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.request(
+                method, url, headers=headers, data=body,
+                timeout=aiohttp.ClientTimeout(total=10)
+            ) as response:
+                stats["production_requests"] += 1
+                response_body = await response.read()
+                response_headers = dict(response.headers)
+                response_headers.pop("Connection", None)
+                response_headers.pop("Transfer-Encoding", None)
+                return web.Response(
+                    body=response_body,
+                    status=response.status,
+                    headers=response_headers,
+                )
+    except Exception as exc:
+        stats["errors"] += 1
+        logger.error("Error forwarding to production: %s", exc)
+        return web.Response(
+            text=json.dumps({"error": "Service temporarily unavailable"}),
+            status=503,
+            content_type="application/json",
+        )
+
+
+async def stats_handler(request):
+    payload = dict(stats)
+    payload["timestamp"] = datetime.now().isoformat()
+    return web.Response(text=json.dumps(payload, indent=2), content_type="application/json")
+
+
+def create_app():
+    app = web.Application()
+    app.router.add_get("/mirror-stats", stats_handler)
+    app.router.add_route("*", "/{path:.*}", handle_request)
+    return app
+
+
+if __name__ == "__main__":
+    web.run_app(create_app(), host="0.0.0.0", port=8000)
+EOF
+Create the Dockerfile for the mirror service:
+cat > config/Dockerfile.mirror << 'EOF'
+FROM python:3.11-alpine
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir aiohttp
+
+COPY traffic-mirror.py /app/
+
+EXPOSE 8000
+
+CMD ["python", "traffic-mirror.py"]
+EOF
+Create the complete docker-compose.yml. This single file defines production, staging, and the traffic mirror together, so there is one authoritative version of the stack:
+cat > docker-compose.yml << 'EOF'
+version: '3.8'
+
+services:
+  production-app:
+    image: nginx:alpine
+    container_name: production-app
+    ports:
+      - "8080:80"
+    volumes:
+      - ./production:/usr/share/nginx/html
+      - ./config/production-nginx.conf:/etc/nginx/conf.d/default.conf
+    networks:
+      - app-network
+
+  staging-app:
+    image: nginx:alpine
+    container_name: staging-app
+    ports:
+      - "8081:80"
+    volumes:
+      - ./staging:/usr/share/nginx/html
+      - ./config/staging-nginx.conf:/etc/nginx/conf.d/default.conf
+    networks:
+      - app-network
+
+  traffic-mirror:
+    build:
+      context: ./config
+      dockerfile: Dockerfile.mirror
+    container_name: traffic-mirror
+    ports:
+      - "8000:8000"
+    depends_on:
+      - production-app
+      - staging-app
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
+EOF
+Deliverable: three services defined in one docker-compose.yml. Verify the file parses correctly before starting anything:
+
+docker compose config
+Expected result: YAML output listing all three services (production-app, staging-app, traffic-mirror) with no errors. If you have the standalone docker-compose binary instead of the Compose plugin, replace docker compose with docker-compose for every command in this lab.
+
+Subtask 1.3: Start the Stack and Confirm Basic Routing
+Build and start all services:
+docker compose up -d --build
+sleep 10
+docker compose ps
+Expected result: all three containers show state Up (or running).
+
+Confirm each service responds directly:
+curl -s http://localhost:8080/health
+curl -s http://localhost:8081/health
+curl -s http://localhost:8000/mirror-stats
+Expected result: the first two return {"status": "healthy", "service": "production"} and {"status": "healthy", "service": "staging"} respectively. The third returns a JSON object with total_requests, production_requests, staging_requests, and errors all at 0.
+
+Deliverable: all three curl commands return valid JSON with no connection errors. This confirms the base environment is healthy before mirroring is exercised.
+
+Task 2: Exercise and Validate the Mirrored Traffic
+Subtask 2.1: Send Traffic Through the Mirror
+Send a handful of requests through the mirror endpoint (port 8000), not directly to production or staging:
+for i in $(seq 1 10); do
+  curl -s -o /dev/null -w "request $i -> HTTP %{http_code}\n" http://localhost:8000/
+  curl -s -o /dev/null -w "request $i api -> HTTP %{http_code}\n" http://localhost:8000/api/test
+done
+Expected result: every line shows HTTP 200. These requests were served from production but silently duplicated to staging in the background.
+
+Check the mirror statistics to confirm both backends received traffic:
+curl -s http://localhost:8000/mirror-stats
+Expected result: total_requests is 20, production_requests is 20, and staging_requests is 20 (staging may lag slightly behind if you check immediately; re-run the command after a couple of seconds if the counts do not yet match).
+
+Deliverable: a mirror-stats response showing non-zero, roughly equal counts for production_requests and staging_requests, proving traffic was duplicated to both environments from a single client-facing request.
+
+Subtask 2.2: Compare Production and Staging Performance
+Create a performance comparison script:
+cat > config/analyze-performance.py << 'EOF'
+#!/usr/bin/env python3
+"""
+Performance comparison between production and staging, sampled directly
+(not through the mirror), to evaluate whether staging is fit to receive
+mirrored traffic before any real cutover.
+"""
+
+import asyncio
+import statistics
+import time
+from datetime import datetime
+
+import aiohttp
+
+PRODUCTION_URL = "http://localhost:8080"
+STAGING_URL = "http://localhost:8081"
+ENDPOINT = "/api/test"
+DURATION_SECONDS = 20
+
+results = {
+    "production": {"times_ms": [], "success": 0, "error": 0},
+    "staging": {"times_ms": [], "success": 0, "error": 0},
+}
+
+
+async def probe(session, base_url, name):
+    start = time.time()
+    try:
+        async with session.get(f"{base_url}{ENDPOINT}") as response:
+            await response.read()
+            elapsed_ms = (time.time() - start) * 1000
+            results[name]["times_ms"].append(elapsed_ms)
+            if response.status < 400:
+                results[name]["success"] += 1
+            else:
+                results[name]["error"] += 1
+    except Exception:
+        results[name]["error"] += 1
+
+
+async def main():
+    print(f"Running {DURATION_SECONDS}s comparison against {ENDPOINT} ...")
+    async with aiohttp.ClientSession() as session:
+        deadline = time.time() + DURATION_SECONDS
+        while time.time() < deadline:
+            await asyncio.gather(
+                probe(session, PRODUCTION_URL, "production"),
+                probe(session, STAGING_URL, "staging"),
+            )
+            await asyncio.sleep(0.5)
+
+    print(f"\nResults at {datetime.now().isoformat()}")
+    for name, data in results.items():
+        if not data["times_ms"]:
+            continue
+        total = data["success"] + data["error"]
+        success_rate = (data["success"] / total * 100) if total else 0
+        print(f"\n{name.upper()}")
+        print(f"  requests: {total}")
+        print(f"  success rate: {success_rate:.1f}%")
+        print(f"  avg response time: {statistics.mean(data['times_ms']):.1f} ms")
+        print(f"  min/max: {min(data['times_ms']):.1f} / {max(data['times_ms']):.1f} ms")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+EOF
+Run the comparison:
+python3 config/analyze-performance.py
+Expected result: two summary blocks, PRODUCTION and STAGING, each showing a 100.0% success rate and an average response time (typically under 50 ms for local containers, though exact numbers vary by machine).
+
+Deliverable: console output showing both services at 100% success rate. Record the average response times for each; this is the baseline you would compare against once real mirrored production load is applied in a non-lab setting.
+
+Subtask 2.3: Validate That Staging Failures Do Not Affect Production Users
+This is the core safety property of dark launches: staging can be broken, slow, or actively serving a bad feature, and production users must never notice.
+
+Create the validation script:
+cat > config/validate-dark-launch.sh << 'EOF'
+#!/bin/bash
+set -uo pipefail
+
+echo "=== Dark Launch Validation ==="
+echo "Confirms production stays healthy even when staging is down."
+echo
+
+echo "--- Step 1: Baseline mirror stats ---"
+curl -s http://localhost:8000/mirror-stats
+echo
+echo
+
+echo "--- Step 2: Stopping staging to simulate a staging-side failure ---"
+docker compose stop staging-app
+sleep 5
+
+echo "--- Step 3: Verifying production still serves users through the mirror ---"
+FAILURES=0
+for i in $(seq 1 5); do
+    code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/)
+    echo "  request $i -> HTTP $code"
+    if [ "$code" != "200" ]; then
+        FAILURES=$((FAILURES + 1))
+    fi
+    sleep 1
+done
+
+if [ "$FAILURES" -eq 0 ]; then
+    echo "PASS: all requests to the mirror succeeded while staging was down."
+else
+    echo "FAIL: $FAILURES request(s) failed while staging was down."
+fi
+echo
+
+echo "--- Step 4: Restarting staging ---"
+docker compose start staging-app
+sleep 8
+
+echo "--- Step 5: Confirming the new feature is reachable only in staging ---"
+staging_code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8081/api/analytics)
+prod_code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/api/analytics)
+echo "  staging /api/analytics -> HTTP $staging_code (expect 200)"
+echo "  production /api/analytics -> HTTP $prod_code (expect 404, feature not launched there)"
+echo
+
+echo "--- Step 6: Final mirror statistics ---"
+curl -s http://localhost:8000/mirror-stats
+echo
+
+echo "=== Validation complete ==="
+EOF
+
+chmod +x config/validate-dark-launch.sh
+Run the validation script:
+./config/validate-dark-launch.sh
+Expected result: Step 3 prints PASS: all requests to the mirror succeeded while staging was down, because the mirror's fire-and-forget design to staging never blocks the production response path. Step 5 shows the analytics feature returning HTTP 200 in staging and HTTP 404 in production, confirming the new feature is genuinely dark-launched and isolated.
+
+Deliverable: full console output of the validation script, showing the PASS line and the contrasting 200/404 status codes for the analytics endpoint.
+
+Expected Outcomes
+A running three-container stack (production, staging, traffic mirror) where every client request produces exactly one duplicated call to staging without altering the response the client receives.
+Documented performance figures showing comparable success rates and response times between production and staging under synthetic load.
+A passing validation run demonstrating that stopping staging entirely has no effect on requests served through the mirror, and that the dark-launched feature is only reachable in staging.
+Troubleshooting
+mirror-stats shows staging_requests stuck far below production_requests: the mirrored call is fire-and-forget, so counts update asynchronously; re-check a few seconds later. If the gap never closes, check docker compose logs traffic-mirror for connection errors to staging-app.
+docker compose up fails to bind a port: another process (or a previous run of this lab) may already be using port 8080, 8081, or 8000. Run docker compose down first, then check sudo lsof -i :8000 (or the relevant port) before starting again.
+Conclusion
+In this lab you built a working traffic-mirroring pipeline for dark launches: a production service, a staging service carrying an unreleased feature, and a lightweight asynchronous proxy that duplicates every request to staging while guaranteeing the client only ever sees production's response. You measured baseline performance for both environments, then proved through a scripted failure test that stopping staging entirely does not degrade the production-facing path, and that the new analytics feature stays confined to staging until it is deliberately promoted. These are the same core mechanics used in production dark-launch systems: isolate the response path, mirror asynchronously, and validate isolation before trusting the pattern with real user traffic. From here, the natural next steps are to mirror only a percentage of traffic instead of 100 percent, add latency and error-rate alerting on the mirrored path, and integrate the validation script into a CI pipeline that gates feature promotion on passing isolation tests.
