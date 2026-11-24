@@ -1,0 +1,358 @@
+Lab 3: Enable Sidecar Proxy Injection
+Objectives
+By the end of this lab, you will be able to:
+
+Understand the concept of sidecar proxy injection in service mesh architecture
+Configure automatic sidecar proxy injection for specific namespaces in OpenShift
+Verify that Envoy proxy containers are properly injected into application pods
+Monitor and validate service mesh activity using OpenShift CLI tools
+Troubleshoot common issues related to sidecar proxy injection
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes/OpenShift concepts (pods, namespaces, deployments)
+Familiarity with OpenShift CLI (oc command)
+Knowledge of service mesh fundamentals and Istio architecture
+Understanding of YAML configuration files
+Completed previous labs in the service mesh series or equivalent experience
+Required Knowledge Areas
+Container orchestration concepts
+Microservices architecture patterns
+Basic networking concepts
+Command-line interface operations
+Lab Environment Setup
+Good News! Al Nafi provides ready-to-use Linux-based cloud machines with all necessary tools pre-installed. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+OpenShift cluster with Istio service mesh installed
+Pre-configured kubectl and oc CLI tools
+Sample applications for testing
+All required permissions and access rights
+Task 1: Annotate Namespaces for Sidecar Proxy Injection
+Subtask 1.1: Understand Sidecar Injection Concepts
+Before implementing sidecar injection, let's understand what happens when we enable it:
+
+Sidecar Proxy Injection automatically adds an Envoy proxy container to every pod in a namespace. This proxy:
+
+Intercepts all network traffic to and from the application container
+Provides traffic management, security, and observability features
+Enables service mesh functionality without modifying application code
+Subtask 1.2: Create a Test Namespace
+First, let's create a dedicated namespace for our testing:
+
+# Create a new namespace for testing sidecar injection
+oc create namespace sidecar-test
+
+# Verify the namespace was created
+oc get namespaces | grep sidecar-test
+Subtask 1.3: Enable Automatic Sidecar Injection
+Now we'll annotate the namespace to enable automatic sidecar injection:
+
+# Add the sidecar injection annotation to the namespace
+oc label namespace sidecar-test istio-injection=enabled
+
+# Verify the label was applied correctly
+oc get namespace sidecar-test --show-labels
+Expected Output:
+
+NAME           STATUS   AGE   LABELS
+sidecar-test   Active   2m    istio-injection=enabled
+Subtask 1.4: Create Additional Test Namespaces
+Let's create another namespace without sidecar injection for comparison:
+
+# Create a namespace without sidecar injection
+oc create namespace no-sidecar-test
+
+# Verify both namespaces exist
+oc get namespaces | grep -E "(sidecar-test|no-sidecar-test)"
+Subtask 1.5: Verify Istio Configuration
+Check that Istio is properly configured in your cluster:
+
+# Check Istio system pods
+oc get pods -n istio-system
+
+# Verify the mutating admission webhook is running
+oc get mutatingwebhookconfiguration | grep istio
+Task 2: Verify Envoy Proxy Injection in Pods
+Subtask 2.1: Deploy a Test Application
+Let's deploy a simple application to test sidecar injection:
+
+# Create a deployment file for our test application
+cat << 'EOF' > test-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+  namespace: sidecar-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-app
+  template:
+    metadata:
+      labels:
+        app: test-app
+    spec:
+      containers:
+      - name: test-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-app-service
+  namespace: sidecar-test
+spec:
+  selector:
+    app: test-app
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP
+EOF
+
+# Apply the deployment
+oc apply -f test-app.yaml
+Subtask 2.2: Deploy the Same Application Without Sidecar Injection
+# Create the same application in the no-sidecar namespace
+cat << 'EOF' > test-app-no-sidecar.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app-no-sidecar
+  namespace: no-sidecar-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: test-app-no-sidecar
+  template:
+    metadata:
+      labels:
+        app: test-app-no-sidecar
+    spec:
+      containers:
+      - name: test-app
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+EOF
+
+# Apply the deployment
+oc apply -f test-app-no-sidecar.yaml
+Subtask 2.3: Compare Pod Configurations
+Now let's examine the differences between pods with and without sidecar injection:
+
+# Check pods in the sidecar-enabled namespace
+echo "=== Pods with Sidecar Injection ==="
+oc get pods -n sidecar-test
+
+# Check pods in the regular namespace
+echo "=== Pods without Sidecar Injection ==="
+oc get pods -n no-sidecar-test
+Subtask 2.4: Examine Container Details
+Let's look at the detailed container information:
+
+# Get detailed information about the pod with sidecar injection
+POD_WITH_SIDECAR=$(oc get pods -n sidecar-test -o jsonpath='{.items[0].metadata.name}')
+echo "Pod with sidecar: $POD_WITH_SIDECAR"
+
+# Check the number of containers in the pod
+oc get pod $POD_WITH_SIDECAR -n sidecar-test -o jsonpath='{.spec.containers[*].name}'
+echo ""
+
+# Get detailed information about the pod without sidecar injection
+POD_WITHOUT_SIDECAR=$(oc get pods -n no-sidecar-test -o jsonpath='{.items[0].metadata.name}')
+echo "Pod without sidecar: $POD_WITHOUT_SIDECAR"
+
+# Check the number of containers in this pod
+oc get pod $POD_WITHOUT_SIDECAR -n no-sidecar-test -o jsonpath='{.spec.containers[*].name}'
+echo ""
+Subtask 2.5: Verify Envoy Proxy Container
+Let's specifically look for the Envoy proxy container:
+
+# Describe the pod with sidecar injection to see all containers
+oc describe pod $POD_WITH_SIDECAR -n sidecar-test | grep -A 5 -B 5 "istio-proxy"
+
+# Check if the Envoy proxy is running
+oc exec $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -- ps aux | grep envoy
+Subtask 2.6: Examine Sidecar Configuration
+# View the istio-proxy container configuration
+oc get pod $POD_WITH_SIDECAR -n sidecar-test -o yaml | grep -A 20 -B 5 "istio-proxy"
+
+# Check the init containers (Istio uses init containers for network setup)
+oc get pod $POD_WITH_SIDECAR -n sidecar-test -o jsonpath='{.spec.initContainers[*].name}'
+echo ""
+Task 3: Monitor Service Mesh Activity Using OpenShift CLI
+Subtask 3.1: Check Envoy Proxy Status
+Let's verify that the Envoy proxy is functioning correctly:
+
+# Check Envoy admin interface (if accessible)
+oc exec $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -- curl -s localhost:15000/stats | head -20
+
+# Check Envoy configuration
+oc exec $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -- curl -s localhost:15000/config_dump | head -50
+Subtask 3.2: Monitor Network Traffic
+# Check listening ports in the sidecar-enabled pod
+oc exec $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -- netstat -tlnp
+
+# Compare with the pod without sidecar
+oc exec $POD_WITHOUT_SIDECAR -n no-sidecar-test -- netstat -tlnp
+Subtask 3.3: Generate Test Traffic
+Let's create some traffic to monitor:
+
+# Create a test client pod in the sidecar-enabled namespace
+cat << 'EOF' > test-client.yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-client
+  namespace: sidecar-test
+spec:
+  containers:
+  - name: test-client
+    image: curlimages/curl:7.85.0
+    command: ['sleep', '3600']
+EOF
+
+# Apply the client pod
+oc apply -f test-client.yaml
+
+# Wait for the pod to be ready
+oc wait --for=condition=Ready pod/test-client -n sidecar-test --timeout=60s
+Subtask 3.4: Test Service Communication
+# Generate traffic from the client to the service
+oc exec test-client -n sidecar-test -- curl -s http://test-app-service/
+
+# Check the response (should be nginx default page)
+oc exec test-client -n sidecar-test -- curl -s -I http://test-app-service/
+Subtask 3.5: Monitor Envoy Access Logs
+# Check Envoy access logs
+oc logs $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy | tail -10
+
+# Generate more traffic and monitor logs in real-time
+oc logs $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -f &
+
+# In another terminal or after stopping the log stream, generate traffic
+for i in {1..5}; do
+  oc exec test-client -n sidecar-test -- curl -s http://test-app-service/ > /dev/null
+  echo "Request $i sent"
+  sleep 1
+done
+Subtask 3.6: Check Service Mesh Metrics
+# Check Envoy metrics
+oc exec $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -- curl -s localhost:15000/stats | grep http
+
+# Check cluster information
+oc exec $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -- curl -s localhost:15000/clusters
+Subtask 3.7: Verify Service Discovery
+# Check what services Envoy knows about
+oc exec $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -- curl -s localhost:15000/config_dump | grep -A 5 -B 5 "test-app-service"
+
+# List all endpoints Envoy is aware of
+oc exec $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -- curl -s localhost:15000/clusters | grep -E "(test-app|outbound)"
+Troubleshooting Common Issues
+Issue 1: Sidecar Not Injected
+If you don't see the istio-proxy container in your pods:
+
+# Check if the namespace is properly labeled
+oc get namespace sidecar-test --show-labels
+
+# Verify Istio system is running
+oc get pods -n istio-system
+
+# Check the mutating webhook configuration
+oc get mutatingwebhookconfiguration istio-sidecar-injector -o yaml
+Issue 2: Pod Startup Issues
+If pods are failing to start after enabling sidecar injection:
+
+# Check pod events
+oc describe pod $POD_WITH_SIDECAR -n sidecar-test
+
+# Check init container logs
+oc logs $POD_WITH_SIDECAR -n sidecar-test -c istio-init
+
+# Verify security context and permissions
+oc get pod $POD_WITH_SIDECAR -n sidecar-test -o yaml | grep -A 10 securityContext
+Issue 3: Network Connectivity Problems
+If applications can't communicate after sidecar injection:
+
+# Check iptables rules (created by istio-init)
+oc exec $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -- iptables -t nat -L
+
+# Verify Envoy is listening on expected ports
+oc exec $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -- netstat -tlnp | grep envoy
+
+# Check Envoy cluster health
+oc exec $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -- curl -s localhost:15000/clusters | grep health_flags
+Validation and Testing
+Final Verification Steps
+# Verify sidecar injection is working
+echo "=== Verification Summary ==="
+echo "Namespace with sidecar injection:"
+oc get pods -n sidecar-test -o custom-columns=NAME:.metadata.name,CONTAINERS:.spec.containers[*].name
+
+echo "Namespace without sidecar injection:"
+oc get pods -n no-sidecar-test -o custom-columns=NAME:.metadata.name,CONTAINERS:.spec.containers[*].name
+
+# Check that traffic is flowing through Envoy
+echo "=== Traffic Statistics ==="
+oc exec $POD_WITH_SIDECAR -n sidecar-test -c istio-proxy -- curl -s localhost:15000/stats | grep -E "(http_inbound|http_outbound)" | head -5
+Performance Impact Assessment
+# Compare resource usage
+echo "=== Resource Usage Comparison ==="
+echo "Pod with sidecar:"
+oc top pod $POD_WITH_SIDECAR -n sidecar-test --containers
+
+echo "Pod without sidecar:"
+oc top pod $POD_WITHOUT_SIDECAR -n no-sidecar-test --containers
+Cleanup
+When you're finished with the lab, clean up the resources:
+
+# Delete test applications
+oc delete -f test-app.yaml
+oc delete -f test-app-no-sidecar.yaml
+oc delete -f test-client.yaml
+
+# Delete test namespaces
+oc delete namespace sidecar-test
+oc delete namespace no-sidecar-test
+
+# Remove temporary files
+rm -f test-app.yaml test-app-no-sidecar.yaml test-client.yaml
+Conclusion
+Congratulations! You have successfully completed Lab 3: Enable Sidecar Proxy Injection. In this lab, you accomplished the following:
+
+Key Achievements
+Configured Automatic Sidecar Injection: You learned how to enable sidecar proxy injection for specific namespaces using Istio labels, which automatically adds Envoy proxy containers to all pods in those namespaces.
+
+Verified Proxy Injection: You successfully deployed applications and confirmed that the Envoy proxy containers were automatically injected, comparing pods with and without sidecar injection to understand the differences.
+
+Monitored Service Mesh Activity: You used OpenShift CLI tools to monitor Envoy proxy behavior, including checking access logs, metrics, and configuration, giving you insight into how the service mesh operates at the network level.
+
+Why This Matters
+Sidecar proxy injection is a fundamental capability of service mesh architecture that provides:
+
+Transparent Traffic Management: Applications gain advanced networking features without code changes
+Enhanced Security: All communication is automatically secured and can be monitored
+Comprehensive Observability: Detailed metrics and tracing for all service-to-service communication
+Policy Enforcement: Centralized control over traffic routing, rate limiting, and access control
+Real-World Applications
+The skills you've developed in this lab are essential for:
+
+Microservices Architecture: Managing complex service-to-service communication in production environments
+Zero-Trust Security: Implementing security policies that verify every network connection
+DevOps and SRE Practices: Gaining visibility into application performance and reliability
+Compliance and Auditing: Meeting regulatory requirements for network monitoring and security
+Next Steps
+With sidecar proxy injection enabled, you're now ready to explore advanced service mesh features such as:
+
+Traffic routing and load balancing
+Security policies and mutual TLS
+Distributed tracing and observability
+Circuit breaking and fault injection
+This foundational knowledge of sidecar proxy injection will serve as the basis for implementing more sophisticated service mesh capabilities in production environments.
