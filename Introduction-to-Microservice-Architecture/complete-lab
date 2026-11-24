@@ -1,0 +1,594 @@
+Lab: Introduction to Microservice Architecture and Service Mesh Concepts
+Lab Objectives
+By the end of this lab, students will be able to:
+
+Compare monolithic and microservice architectures and articulate their tradeoffs
+Identify the key benefits and challenges of implementing microservices
+Explore how OpenShift Service Mesh (Istio-based) addresses common microservice challenges
+Interpret and document output from analysis scripts to build organizational recommendations
+Configure and simulate service mesh traffic management patterns, including circuit breaking
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of software architecture concepts
+Familiarity with containerization concepts (Docker basics)
+Knowledge of REST APIs and HTTP protocols
+Basic Linux command line experience
+Familiarity with Kubernetes fundamentals
+This lab runs entirely on a Linux machine with Python 3 installed. No cluster is required; all Kubernetes/Istio YAML is generated and reviewed locally as configuration artifacts. Verify your environment and install the one required Python dependency:
+
+python3 --version
+pip3 install --user requests
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides Linux-based cloud machines for this lab. Simply click Start Lab to access your pre-configured environment. No need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+Red Hat Enterprise Linux 9 (or compatible Linux distribution)
+Python 3
+Sample microservice application scaffolding
+Text editors and development utilities
+Create your working directory before starting:
+
+mkdir -p ~/microservices-lab
+cd ~/microservices-lab
+Task 1: Compare Monolithic and Microservice Architectures
+Subtask 1.1: Document Architectural Characteristics
+Step 1: Create a Comparison Document
+cat > architecture-comparison.md << 'EOF'
+# Architecture Comparison Study
+
+## Monolithic Architecture
+- Single deployable unit
+- Shared database
+- Internal method calls (in-process)
+- Technology stack uniformity
+- Centralized logging and monitoring
+
+## Microservice Architecture
+- Multiple independently deployable services
+- Service-specific databases
+- Network-based communication (REST, gRPC, messaging)
+- Technology diversity across services
+- Distributed logging and monitoring
+EOF
+
+cat architecture-comparison.md
+Step 2: Build Sample Project Structures
+Create a monolithic application layout:
+
+mkdir -p monolithic-app/{controllers,models,services,database}
+touch monolithic-app/controllers/{user,product,order}_controller.py
+touch monolithic-app/models/{user,product,order}_model.py
+touch monolithic-app/services/{payment,inventory,notification}_service.py
+touch monolithic-app/database/schema.sql
+touch monolithic-app/app.py
+
+find monolithic-app -type f | sort
+Create a microservice application layout:
+
+mkdir -p microservices-app/{user-service,product-service,order-service,payment-service}
+for service in user-service product-service order-service payment-service; do
+    mkdir -p microservices-app/$service/{src,database,config}
+    touch microservices-app/$service/src/app.py
+    touch microservices-app/$service/database/schema.sql
+    touch microservices-app/$service/config/config.yaml
+    touch microservices-app/$service/Dockerfile
+done
+
+find microservices-app -type f | sort
+Deliverable: Two directory trees exist under ~/microservices-lab: monolithic-app/ (a single unit with shared controllers/models/services) and microservices-app/ (four independently scaffolded services, each with its own src, database, config, and Dockerfile). Running find monolithic-app -type f | sort should list 10 files; running the same for microservices-app should list 16 files (4 services x 4 files each).
+
+Subtask 1.2: Analyze Benefits with a Python Script
+Step 1: Create the Benefit Analyzer
+cat > analyze-benefits.py << 'EOF'
+#!/usr/bin/env python3
+
+class MicroserviceBenefitAnalyzer:
+    def __init__(self):
+        self.benefits = {
+            'scalability': {
+                'description': 'Independent scaling of services',
+                'example': 'Scale payment service during high transaction periods',
+                'impact': 'High'
+            },
+            'technology_diversity': {
+                'description': 'Use different technologies per service',
+                'example': 'Python for ML service, Go for high-performance API',
+                'impact': 'Medium'
+            },
+            'fault_isolation': {
+                'description': 'Failures contained to individual services',
+                'example': 'Recommendation service down, checkout still works',
+                'impact': 'High'
+            },
+            'team_autonomy': {
+                'description': 'Teams can work independently',
+                'example': 'User team deploys without affecting product team',
+                'impact': 'High'
+            }
+        }
+
+    def analyze_benefit(self, benefit_name):
+        if benefit_name in self.benefits:
+            benefit = self.benefits[benefit_name]
+            print(f"Benefit: {benefit_name.title()}")
+            print(f"Description: {benefit['description']}")
+            print(f"Example: {benefit['example']}")
+            print(f"Business Impact: {benefit['impact']}")
+            print("-" * 50)
+        else:
+            print(f"Benefit '{benefit_name}' not found")
+
+    def analyze_all_benefits(self):
+        print("MICROSERVICE BENEFITS ANALYSIS")
+        print("=" * 50)
+        for benefit_name in self.benefits:
+            self.analyze_benefit(benefit_name)
+
+if __name__ == "__main__":
+    analyzer = MicroserviceBenefitAnalyzer()
+    analyzer.analyze_all_benefits()
+EOF
+
+chmod +x analyze-benefits.py
+python3 analyze-benefits.py
+You should see four benefit blocks printed (Scalability, Technology Diversity, Fault Isolation, Team Autonomy), each showing a description, example, and business impact rating separated by lines of dashes.
+
+Step 2: Reflect on the Output
+cat > results-benefits.txt << 'EOF'
+Task: analyze-benefits.py
+
+1. Most important benefit observed: fault_isolation
+   (Replace with the benefit YOU judged most important after reviewing the output.)
+
+2. Why it matters for your organization:
+   (Write 1-2 sentences tying this benefit to a real or hypothetical system you know,
+    e.g. "Our checkout flow must stay up even if the recommendation engine fails.")
+
+3. How it relates to service mesh:
+   (Note that service mesh features like circuit breaking and retries directly support
+    this benefit by containing failures at the network layer instead of in application code.)
+EOF
+
+cat results-benefits.txt
+Deliverable: A file results-benefits.txt containing your own filled-in answers (not the placeholder text) identifying one benefit, its organizational relevance, and its connection to service mesh capabilities.
+
+Task 2: Identify Microservice Challenges and Apply a Decision Framework
+Subtask 2.1: Assess Common Challenges
+Step 1: Create the Challenge Assessment Script
+cat > challenge-assessment.py << 'EOF'
+#!/usr/bin/env python3
+
+class ChallengeAssessment:
+    def __init__(self):
+        self.challenges = {
+            'network_complexity': {
+                'severity': 'High',
+                'description': 'Network calls can fail and have latency',
+                'mitigation': 'Circuit breakers, retries, timeouts',
+                'tools': 'Istio, Envoy'
+            },
+            'data_consistency': {
+                'severity': 'High',
+                'description': 'Maintaining consistency across services',
+                'mitigation': 'Eventual consistency, Saga pattern',
+                'tools': 'Event sourcing, CQRS'
+            },
+            'service_discovery': {
+                'severity': 'Medium',
+                'description': 'Services need to find each other dynamically',
+                'mitigation': 'Service registry, DNS-based discovery',
+                'tools': 'Consul, Kubernetes DNS'
+            },
+            'monitoring_complexity': {
+                'severity': 'Medium',
+                'description': 'Tracking requests across many services',
+                'mitigation': 'Distributed tracing, centralized logging',
+                'tools': 'Jaeger, ELK stack'
+            }
+        }
+
+    def assess_challenge(self, challenge_name):
+        if challenge_name in self.challenges:
+            challenge = self.challenges[challenge_name]
+            print(f"Challenge: {challenge_name.replace('_', ' ').title()}")
+            print(f"Severity: {challenge['severity']}")
+            print(f"Description: {challenge['description']}")
+            print(f"Mitigation: {challenge['mitigation']}")
+            print(f"Tools: {challenge['tools']}")
+            print("-" * 60)
+
+    def assess_all_challenges(self):
+        print("MICROSERVICE CHALLENGES ASSESSMENT")
+        print("=" * 60)
+        for challenge_name in self.challenges:
+            self.assess_challenge(challenge_name)
+
+if __name__ == "__main__":
+    assessor = ChallengeAssessment()
+    assessor.assess_all_challenges()
+EOF
+
+chmod +x challenge-assessment.py
+python3 challenge-assessment.py
+You should see four challenge blocks (Network Complexity, Data Consistency, Service Discovery, Monitoring Complexity), each with severity, description, mitigation, and tools.
+
+Step 2: Reflect on the Output
+cat > results-challenges.txt << 'EOF'
+Task: challenge-assessment.py
+
+1. Most important challenge observed: network_complexity
+   (Replace with the challenge YOU judged most important.)
+
+2. Why it matters for your organization:
+   (Write 1-2 sentences on how this challenge would affect a system you know or plan to build.)
+
+3. How it relates to service mesh:
+   (Explain that this exact challenge is one of the primary reasons service mesh exists -
+    e.g. network complexity is mitigated by sidecar-level retries and circuit breakers
+    instead of custom code in every service.)
+EOF
+
+cat results-challenges.txt
+Deliverable: A file results-challenges.txt with your own analysis linking one challenge to your organization's context and to a service mesh capability.
+
+Subtask 2.2: Apply a Decision Matrix
+Step 1: Build and Run the Decision Framework
+cat > decision-matrix.py << 'EOF'
+#!/usr/bin/env python3
+
+class MicroserviceDecisionMatrix:
+    def __init__(self):
+        self.factors = {
+            'team_size': {
+                'small': {'monolith': 8, 'microservice': 3},
+                'medium': {'monolith': 6, 'microservice': 6},
+                'large': {'monolith': 3, 'microservice': 9}
+            },
+            'system_complexity': {
+                'low': {'monolith': 9, 'microservice': 4},
+                'medium': {'monolith': 6, 'microservice': 6},
+                'high': {'monolith': 3, 'microservice': 8}
+            },
+            'scalability_requirements': {
+                'low': {'monolith': 8, 'microservice': 5},
+                'medium': {'monolith': 5, 'microservice': 7},
+                'high': {'monolith': 2, 'microservice': 9}
+            },
+            'deployment_frequency': {
+                'low': {'monolith': 7, 'microservice': 4},
+                'medium': {'monolith': 5, 'microservice': 6},
+                'high': {'monolith': 3, 'microservice': 9}
+            }
+        }
+
+    def evaluate_scenario(self, team_size, complexity, scalability, deployment):
+        monolith_score = 0
+        microservice_score = 0
+
+        factors = [
+            ('team_size', team_size),
+            ('system_complexity', complexity),
+            ('scalability_requirements', scalability),
+            ('deployment_frequency', deployment)
+        ]
+
+        print("DECISION MATRIX EVALUATION")
+        print("=" * 40)
+
+        for factor_name, factor_value in factors:
+            factor_scores = self.factors[factor_name][factor_value]
+            monolith_score += factor_scores['monolith']
+            microservice_score += factor_scores['microservice']
+
+            print(f"{factor_name.replace('_', ' ').title()}: {factor_value}")
+            print(f"  Monolith: {factor_scores['monolith']}")
+            print(f"  Microservice: {factor_scores['microservice']}")
+
+        print("-" * 40)
+        print(f"Total Monolith Score: {monolith_score}")
+        print(f"Total Microservice Score: {microservice_score}")
+
+        if monolith_score > microservice_score:
+            recommendation = "Monolithic Architecture"
+        elif microservice_score > monolith_score:
+            recommendation = "Microservice Architecture"
+        else:
+            recommendation = "Either approach viable"
+
+        print(f"Recommendation: {recommendation}")
+        return recommendation
+
+if __name__ == "__main__":
+    matrix = MicroserviceDecisionMatrix()
+
+    print("Scenario 1: Startup with simple application")
+    matrix.evaluate_scenario('small', 'low', 'low', 'medium')
+
+    print("\n" + "=" * 50 + "\n")
+
+    print("Scenario 2: Large enterprise with complex requirements")
+    matrix.evaluate_scenario('large', 'high', 'high', 'high')
+EOF
+
+chmod +x decision-matrix.py
+python3 decision-matrix.py
+Deliverable: Console output showing two scenario evaluations. Scenario 1 (small team, low complexity, low scalability, medium deployment frequency) should recommend "Monolithic Architecture" with a higher monolith score. Scenario 2 (large team, high complexity, high scalability, high deployment frequency) should recommend "Microservice Architecture" with a higher microservice score. Confirm both totals and recommendations printed correctly.
+
+Task 3: Configure OpenShift Service Mesh Traffic Management
+Subtask 3.1: Understand Service Mesh Architecture
+Step 1: Document Core Concepts
+cat > service-mesh-concepts.md << 'EOF'
+# Service Mesh Architecture Concepts
+
+## What is a Service Mesh?
+A service mesh is a dedicated infrastructure layer that handles service-to-service
+communication in a microservices architecture, typically implemented via sidecar proxies.
+
+## Core Components
+
+### Data Plane
+- Sidecar Proxies: Envoy proxies deployed alongside each service
+- Traffic Management: load balancing, routing, retries, circuit breaking
+- Security: mutual TLS (mTLS), authentication, authorization
+- Observability: metrics, logs, traces generated at the proxy level
+
+### Control Plane
+- Configuration distribution to all sidecar proxies
+- Service discovery and endpoint management
+- Certificate issuance and rotation
+- Policy definition and enforcement
+
+## OpenShift Service Mesh
+- Built on the open source Istio project
+- Integrated with OpenShift for installation and lifecycle management
+- Adds enterprise support and Red Hat security patching
+EOF
+
+cat service-mesh-concepts.md
+Step 2: Generate Core Traffic Management YAML
+mkdir -p service-mesh-configs
+
+cat > service-mesh-configs/virtual-service.yaml << 'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: product-service
+  namespace: ecommerce
+spec:
+  hosts:
+  - product-service
+  http:
+  - match:
+    - headers:
+        version:
+          exact: v2
+    route:
+    - destination:
+        host: product-service
+        subset: v2
+      weight: 100
+  - route:
+    - destination:
+        host: product-service
+        subset: v1
+      weight: 80
+    - destination:
+        host: product-service
+        subset: v2
+      weight: 20
+EOF
+
+cat > service-mesh-configs/destination-rule.yaml << 'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: product-service
+  namespace: ecommerce
+spec:
+  host: product-service
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 10
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 2
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+EOF
+
+cat service-mesh-configs/virtual-service.yaml
+cat service-mesh-configs/destination-rule.yaml
+Deliverable: Two YAML files under service-mesh-configs/. Confirm the VirtualService routes 80/20 traffic between v1 and v2 subsets by default, with a header-based override to 100% v2 when version: v2 is set. Confirm the DestinationRule defines LEAST_CONN load balancing, a connection pool limit of 10 TCP connections, and outlier detection that ejects hosts after 3 consecutive 5xx errors.
+
+Subtask 3.2: Simulate a Circuit Breaker in Python
+Circuit breakers prevent cascading failures by temporarily stopping requests to a failing service. This subtask builds a local simulator that mirrors the state machine an Istio/Envoy circuit breaker implements (CLOSED, OPEN, HALF_OPEN), and generates the matching DestinationRule configuration.
+
+Step 1: Write the Complete Circuit Breaker Script
+mkdir -p traffic-management-examples
+
+cat > traffic-management-examples/circuit-breaker.py << 'EOF'
+#!/usr/bin/env python3
+import random
+import time
+
+
+class CircuitBreakerSimulator:
+    def __init__(self, failure_threshold=3, reset_timeout=5):
+        self.state = 'CLOSED'
+        self.failure_count = 0
+        self.failure_threshold = failure_threshold
+        self.reset_timeout = reset_timeout
+        self.last_failure_time = None
+        self.success_count_in_half_open = 0
+        self.half_open_success_target = 2
+
+    def generate_destination_rule(self):
+        dr_config = """apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: payment-service-circuit-breaker
+  namespace: ecommerce
+spec:
+  host: payment-service
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 20
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 5
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 10s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+"""
+        return dr_config
+
+    def check_circuit(self):
+        """Return True if a request is currently allowed through."""
+        if self.state == 'CLOSED':
+            return True
+
+        if self.state == 'OPEN':
+            elapsed = time.time() - self.last_failure_time
+            if elapsed >= self.reset_timeout:
+                self.state = 'HALF_OPEN'
+                self.success_count_in_half_open = 0
+                print(f"  [circuit] timeout elapsed ({elapsed:.1f}s) -> HALF_OPEN")
+                return True
+            return False
+
+        # HALF_OPEN: allow a limited trial request through
+        return True
+
+    def record_success(self):
+        if self.state == 'HALF_OPEN':
+            self.success_count_in_half_open += 1
+            if self.success_count_in_half_open >= self.half_open_success_target:
+                self.state = 'CLOSED'
+                self.failure_count = 0
+                print("  [circuit] trial requests succeeded -> CLOSED")
+        elif self.state == 'CLOSED':
+            self.failure_count = 0
+
+    def record_failure(self):
+        self.last_failure_time = time.time()
+        if self.state == 'HALF_OPEN':
+            self.state = 'OPEN'
+            print("  [circuit] trial request failed in HALF_OPEN -> OPEN")
+            return
+
+        self.failure_count += 1
+        if self.failure_count >= self.failure_threshold:
+            self.state = 'OPEN'
+            print(f"  [circuit] failure threshold reached ({self.failure_count}) -> OPEN")
+
+
+def simulate_request(breaker, force_failure=False):
+    if not breaker.check_circuit():
+        print("  Request BLOCKED (circuit OPEN)")
+        return "blocked"
+
+    # Simulate a call that fails ~40% of the time, or always fails if forced
+    failed = force_failure or (random.random() < 0.4)
+
+    if failed:
+        breaker.record_failure()
+        print(f"  Request FAILED (state now: {breaker.state})")
+        return "failed"
+    else:
+        breaker.record_success()
+        print(f"  Request SUCCEEDED (state now: {breaker.state})")
+        return "succeeded"
+
+
+def main():
+    random.seed(42)
+    breaker = CircuitBreakerSimulator(failure_threshold=3, reset_timeout=2)
+
+    print("GENERATED DESTINATION RULE")
+    print("=" * 50)
+    print(breaker.generate_destination_rule())
+
+    print("CIRCUIT BREAKER SIMULATION")
+    print("=" * 50)
+
+    print("\nPhase 1: Forcing consecutive failures to trip the circuit")
+    for i in range(1, 5):
+        print(f"Request {i} (state before: {breaker.state}):")
+        simulate_request(breaker, force_failure=True)
+
+    print("\nPhase 2: Requests while circuit is OPEN (should be blocked)")
+    for i in range(1, 3):
+        print(f"Request {i} (state before: {breaker.state}):")
+        simulate_request(breaker)
+
+    print(f"\nWaiting {breaker.reset_timeout} seconds for reset timeout...")
+    time.sleep(breaker.reset_timeout + 0.5)
+
+    print("\nPhase 3: Trial requests in HALF_OPEN (forcing success to close circuit)")
+    for i in range(1, 4):
+        print(f"Request {i} (state before: {breaker.state}):")
+        simulate_request(breaker, force_failure=False)
+        if breaker.state == 'CLOSED':
+            break
+
+    print(f"\nFinal circuit state: {breaker.state}")
+
+
+if __name__ == "__main__":
+    main()
+EOF
+
+chmod +x traffic-management-examples/circuit-breaker.py
+python3 traffic-management-examples/circuit-breaker.py
+You should see the generated DestinationRule YAML printed first, followed by three simulation phases: Phase 1 shows the circuit tripping from CLOSED to OPEN after 3 forced failures; Phase 2 shows subsequent requests being blocked while OPEN; Phase 3 shows the circuit transitioning to HALF_OPEN after the timeout and then to CLOSED once trial requests succeed. The final printed state should be CLOSED.
+
+Step 2: Reflect on the Simulation
+cat > results-circuit-breaker.txt << 'EOF'
+Task: circuit-breaker.py
+
+1. Observation: after 3 consecutive forced failures, the circuit moved from CLOSED to OPEN,
+   and requests were blocked immediately (without attempting the network call) until the
+   reset_timeout elapsed.
+
+2. Why it matters for your organization:
+   (Write 1-2 sentences on how blocking requests early, instead of letting them time out
+    against a failing dependency, protects upstream resources and end-user latency.)
+
+3. How it relates to service mesh:
+   This simulation mirrors Istio's outlierDetection settings in a DestinationRule
+   (consecutive5xxErrors, baseEjectionTime). In a real OpenShift Service Mesh deployment,
+   the Envoy sidecar enforces this behavior automatically, without any change to
+   application code.
+EOF
+
+cat results-circuit-breaker.txt
+Deliverable: A file results-circuit-breaker.txt documenting your observation of the state transition sequence and its relationship to the outlierDetection fields in the generated DestinationRule.
+
+Expected Outcomes
+Working directory containing monolithic and microservice project scaffolds, comparison documentation, and three results files with your written analysis
+Console output from four Python scripts (analyze-benefits.py, challenge-assessment.py, decision-matrix.py, circuit-breaker.py) demonstrating correct execution
+A service-mesh-configs/ directory with a VirtualService and DestinationRule, plus a circuit breaker simulator that correctly transitions between CLOSED, OPEN, and HALF_OPEN states
+Troubleshooting
+Issue 1: python3: command not found or script fails to execute after chmod +x. Diagnostic hint: confirm Python 3 is installed and on your PATH with which python3; on systems where only python maps to Python 3, invoke scripts explicitly with python3 scriptname.py rather than relying on the shebang line.
+
+Issue 2: circuit-breaker.py finishes with a final state other than CLOSED. Diagnostic hint: this simulation uses random.seed(42) for reproducibility in Phase 1 forced failures, but Phase 3 also forces force_failure=False; if you modify the script and remove the force_failure arguments, the circuit's final state will depend on random chance. Check whether success_count_in_half_open reached half_open_success_target before concluding the script is broken.
+
+Conclusion
+In this lab, you compared monolithic and microservice architectures directly through project scaffolding and a weighted decision matrix, seeing concretely why small, low-complexity systems often favor a monolith while large-scale, high-deployment-frequency systems favor microservices. You then used Python scripts to analyze the benefits and challenges of microservices and captured your own written reflections tying each finding back to organizational context. Finally, you explored core OpenShift Service Mesh concepts, generated real Istio VirtualService and DestinationRule configurations, and built a working circuit breaker simulator that correctly models the CLOSED, OPEN, and HALF_OPEN state transitions that Envoy sidecars enforce automatically in a production service mesh. Together, these exercises demonstrate how a service mesh shifts concerns like traffic splitting, load balancing, and failure isolation out of application code and into a dedicated, centrally managed infrastructure layer, which is the central value proposition of adopting OpenShift Service Mesh for microservice management.

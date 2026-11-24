@@ -1,0 +1,12 @@
+Task: challenge-assessment.py
+
+1. Most important challenge observed: network_complexity
+   (Replace with the challenge YOU judged most important.)
+
+2. Why it matters for your organization:
+   (Write 1-2 sentences on how this challenge would affect a system you know or plan to build.)
+
+3. How it relates to service mesh:
+   (Explain that this exact challenge is one of the primary reasons service mesh exists -
+    e.g. network complexity is mitigated by sidecar-level retries and circuit breakers
+    instead of custom code in every service.)

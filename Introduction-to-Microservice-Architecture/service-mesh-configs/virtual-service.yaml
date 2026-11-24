@@ -1,0 +1,27 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: product-service
+  namespace: ecommerce
+spec:
+  hosts:
+  - product-service
+  http:
+  - match:
+    - headers:
+        version:
+          exact: v2
+    route:
+    - destination:
+        host: product-service
+        subset: v2
+      weight: 100
+  - route:
+    - destination:
+        host: product-service
+        subset: v1
+      weight: 80
+    - destination:
+        host: product-service
+        subset: v2
+      weight: 20

@@ -1,0 +1,15 @@
+Task: circuit-breaker.py
+
+1. Observation: after 3 consecutive forced failures, the circuit moved from CLOSED to OPEN,
+   and requests were blocked immediately (without attempting the network call) until the
+   reset_timeout elapsed.
+
+2. Why it matters for your organization:
+   (Write 1-2 sentences on how blocking requests early, instead of letting them time out
+    against a failing dependency, protects upstream resources and end-user latency.)
+
+3. How it relates to service mesh:
+   This simulation mirrors Istio's outlierDetection settings in a DestinationRule
+   (consecutive5xxErrors, baseEjectionTime). In a real OpenShift Service Mesh deployment,
+   the Envoy sidecar enforces this behavior automatically, without any change to
+   application code.

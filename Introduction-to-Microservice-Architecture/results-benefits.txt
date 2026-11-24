@@ -1,0 +1,12 @@
+Task: analyze-benefits.py
+
+1. Most important benefit observed: fault_isolation
+   (Replace with the benefit YOU judged most important after reviewing the output.)
+
+2. Why it matters for your organization:
+   (Write 1-2 sentences tying this benefit to a real or hypothetical system you know,
+    e.g. "Our checkout flow must stay up even if the recommendation engine fails.")
+
+3. How it relates to service mesh:
+   (Note that service mesh features like circuit breaking and retries directly support
+    this benefit by containing failures at the network layer instead of in application code.)
