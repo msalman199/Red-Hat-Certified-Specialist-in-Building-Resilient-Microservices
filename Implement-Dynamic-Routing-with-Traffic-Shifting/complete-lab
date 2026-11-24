@@ -1,0 +1,852 @@
+Lab 8: Implement Dynamic Routing with Traffic Shifting
+Objectives
+By the end of this lab, students will be able to:
+
+Implement dynamic traffic routing between different versions of microservices
+Configure progressive traffic shifting using percentage-based routing
+Set up and test A/B testing scenarios with real-time traffic distribution
+Monitor and analyze traffic patterns during version transitions
+Understand the principles of canary deployments and blue-green deployments
+Troubleshoot common issues in dynamic routing configurations
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of containerization concepts (Docker)
+Familiarity with Kubernetes fundamentals
+Knowledge of microservices architecture principles
+Experience with YAML configuration files
+Understanding of HTTP protocols and REST APIs
+Basic command-line interface skills
+Required Knowledge Areas
+Kubernetes: Pods, Services, Deployments, ConfigMaps
+Service Mesh Concepts: Traffic management, load balancing
+Networking: HTTP routing, load balancing algorithms
+Version Control: Understanding of semantic versioning
+Lab Environment Setup
+Good News! Al Nafi provides you with ready-to-use Linux-based cloud machines. Simply click Start Lab to begin - no need to build your own VM or install complex software. Your lab environment comes pre-configured with:
+
+Ubuntu 20.04 LTS
+Docker and Docker Compose
+Kubernetes (k3s)
+Istio Service Mesh
+kubectl command-line tool
+curl and other networking utilities
+Task 1: Set Up Dynamic Routing with Versioned Microservices
+Subtask 1.1: Create the Base Application Structure
+First, let's create a simple microservice application with two versions to demonstrate dynamic routing.
+
+Create the project directory structure:
+mkdir -p ~/dynamic-routing-lab
+cd ~/dynamic-routing-lab
+mkdir -p app-v1 app-v2 k8s-configs
+Create Version 1 of the application:
+Create the file app-v1/app.py:
+
+from flask import Flask, jsonify
+import os
+import socket
+
+app = Flask(__name__)
+
+@app.route('/api/version')
+def get_version():
+    return jsonify({
+        'version': '1.0.0',
+        'message': 'Hello from Version 1!',
+        'hostname': socket.gethostname(),
+        'features': ['basic-functionality', 'core-api']
+    })
+
+@app.route('/api/health')
+def health_check():
+    return jsonify({'status': 'healthy', 'version': '1.0.0'})
+
+@app.route('/api/data')
+def get_data():
+    return jsonify({
+        'data': 'This is data from version 1',
+        'timestamp': '2024-01-01T00:00:00Z',
+        'version': '1.0.0'
+    })
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+Create Version 2 of the application:
+Create the file app-v2/app.py:
+
+from flask import Flask, jsonify
+import os
+import socket
+from datetime import datetime
+
+app = Flask(__name__)
+
+@app.route('/api/version')
+def get_version():
+    return jsonify({
+        'version': '2.0.0',
+        'message': 'Hello from Version 2 - Now with Enhanced Features!',
+        'hostname': socket.gethostname(),
+        'features': ['basic-functionality', 'core-api', 'enhanced-analytics', 'real-time-updates']
+    })
+
+@app.route('/api/health')
+def health_check():
+    return jsonify({'status': 'healthy', 'version': '2.0.0'})
+
+@app.route('/api/data')
+def get_data():
+    return jsonify({
+        'data': 'This is enhanced data from version 2',
+        'timestamp': datetime.now().isoformat(),
+        'version': '2.0.0',
+        'enhanced': True
+    })
+
+@app.route('/api/analytics')
+def get_analytics():
+    return jsonify({
+        'analytics': 'Advanced analytics data',
+        'metrics': {'requests': 100, 'response_time': '50ms'},
+        'version': '2.0.0'
+    })
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+Subtask 1.2: Create Docker Images for Both Versions
+Create Dockerfile for Version 1:
+Create the file app-v1/Dockerfile:
+
+FROM python:3.9-slim
+
+WORKDIR /app
+
+RUN pip install flask
+
+COPY app.py .
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]
+Create Dockerfile for Version 2:
+Create the file app-v2/Dockerfile:
+
+FROM python:3.9-slim
+
+WORKDIR /app
+
+RUN pip install flask
+
+COPY app.py .
+
+EXPOSE 5000
+
+CMD ["python", "app.py"]
+Build the Docker images:
+# Build Version 1
+cd ~/dynamic-routing-lab/app-v1
+docker build -t myapp:v1.0.0 .
+
+# Build Version 2
+cd ~/dynamic-routing-lab/app-v2
+docker build -t myapp:v2.0.0 .
+
+# Verify images are created
+docker images | grep myapp
+Subtask 1.3: Deploy Applications to Kubernetes
+Create Kubernetes deployment for Version 1:
+Create the file k8s-configs/deployment-v1.yaml:
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-v1
+  labels:
+    app: myapp
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: v1
+    spec:
+      containers:
+      - name: myapp
+        image: myapp:v1.0.0
+        ports:
+        - containerPort: 5000
+        env:
+        - name: VERSION
+          value: "1.0.0"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-v1-service
+  labels:
+    app: myapp
+    version: v1
+spec:
+  selector:
+    app: myapp
+    version: v1
+  ports:
+  - port: 80
+    targetPort: 5000
+    protocol: TCP
+  type: ClusterIP
+Create Kubernetes deployment for Version 2:
+Create the file k8s-configs/deployment-v2.yaml:
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: myapp-v2
+  labels:
+    app: myapp
+    version: v2
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: myapp
+      version: v2
+  template:
+    metadata:
+      labels:
+        app: myapp
+        version: v2
+    spec:
+      containers:
+      - name: myapp
+        image: myapp:v2.0.0
+        ports:
+        - containerPort: 5000
+        env:
+        - name: VERSION
+          value: "2.0.0"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-v2-service
+  labels:
+    app: myapp
+    version: v2
+spec:
+  selector:
+    app: myapp
+    version: v2
+  ports:
+  - port: 80
+    targetPort: 5000
+    protocol: TCP
+  type: ClusterIP
+Deploy both versions to Kubernetes:
+cd ~/dynamic-routing-lab/k8s-configs
+
+# Deploy Version 1
+kubectl apply -f deployment-v1.yaml
+
+# Deploy Version 2
+kubectl apply -f deployment-v2.yaml
+
+# Verify deployments
+kubectl get deployments
+kubectl get pods -l app=myapp
+kubectl get services -l app=myapp
+Task 2: Shift Traffic Gradually Based on Defined Percentages
+Subtask 2.1: Install and Configure Istio Service Mesh
+Install Istio:
+# Download Istio
+curl -L https://istio.io/downloadIstio | sh -
+cd istio-*
+export PATH=$PWD/bin:$PATH
+
+# Install Istio
+istioctl install --set values.defaultRevision=default -y
+
+# Enable Istio injection for default namespace
+kubectl label namespace default istio-injection=enabled
+
+# Verify Istio installation
+kubectl get pods -n istio-system
+Restart deployments to inject Istio sidecars:
+kubectl rollout restart deployment myapp-v1
+kubectl rollout restart deployment myapp-v2
+
+# Wait for rollout to complete
+kubectl rollout status deployment myapp-v1
+kubectl rollout status deployment myapp-v2
+
+# Verify sidecars are injected (should show 2/2 containers)
+kubectl get pods -l app=myapp
+Subtask 2.2: Create Istio Traffic Management Resources
+Create a unified service for both versions:
+Create the file k8s-configs/unified-service.yaml:
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: myapp-service
+  labels:
+    app: myapp
+spec:
+  selector:
+    app: myapp
+  ports:
+  - port: 80
+    targetPort: 5000
+    protocol: TCP
+    name: http
+  type: ClusterIP
+Create Istio Gateway:
+Create the file k8s-configs/gateway.yaml:
+
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: myapp-gateway
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+Create Destination Rules:
+Create the file k8s-configs/destination-rule.yaml:
+
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: myapp-destination-rule
+spec:
+  host: myapp-service
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+Apply the configurations:
+kubectl apply -f unified-service.yaml
+kubectl apply -f gateway.yaml
+kubectl apply -f destination-rule.yaml
+Subtask 2.3: Implement Progressive Traffic Shifting
+Create initial Virtual Service (100% to v1):
+Create the file k8s-configs/virtual-service-100-0.yaml:
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-virtual-service
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - myapp-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: myapp-service
+        subset: v1
+      weight: 100
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 0
+Apply the initial configuration:
+kubectl apply -f virtual-service-100-0.yaml
+Test the initial setup:
+# Get the ingress gateway external IP
+export INGRESS_HOST=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+# If external IP is not available, use port-forward
+kubectl port-forward -n istio-system svc/istio-ingressgateway 8080:80 &
+
+# Test the application (use localhost:8080 if using port-forward)
+for i in {1..10}; do
+  curl -s http://$INGRESS_HOST/api/version | jq '.version'
+done
+Create traffic shifting configurations:
+Create the file k8s-configs/virtual-service-90-10.yaml:
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-virtual-service
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - myapp-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: myapp-service
+        subset: v1
+      weight: 90
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 10
+Create the file k8s-configs/virtual-service-70-30.yaml:
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-virtual-service
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - myapp-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: myapp-service
+        subset: v1
+      weight: 70
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 30
+Create the file k8s-configs/virtual-service-50-50.yaml:
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-virtual-service
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - myapp-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: myapp-service
+        subset: v1
+      weight: 50
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 50
+Subtask 2.4: Demonstrate Progressive Traffic Shifting
+Create a traffic testing script:
+Create the file test-traffic.sh:
+
+#!/bin/bash
+
+# Function to test traffic distribution
+test_traffic() {
+    local config_name=$1
+    local expected_v1=$2
+    local expected_v2=$3
+    
+    echo "Testing configuration: $config_name"
+    echo "Expected distribution - V1: ${expected_v1}%, V2: ${expected_v2}%"
+    
+    # Apply the configuration
+    kubectl apply -f $config_name
+    
+    # Wait for configuration to propagate
+    sleep 10
+    
+    # Test traffic distribution
+    v1_count=0
+    v2_count=0
+    total_requests=100
+    
+    for i in $(seq 1 $total_requests); do
+        version=$(curl -s http://localhost:8080/api/version | jq -r '.version')
+        if [[ "$version" == "1.0.0" ]]; then
+            ((v1_count++))
+        elif [[ "$version" == "2.0.0" ]]; then
+            ((v2_count++))
+        fi
+    done
+    
+    v1_percentage=$((v1_count * 100 / total_requests))
+    v2_percentage=$((v2_count * 100 / total_requests))
+    
+    echo "Actual distribution - V1: ${v1_percentage}%, V2: ${v2_percentage}%"
+    echo "V1 requests: $v1_count, V2 requests: $v2_count"
+    echo "----------------------------------------"
+}
+
+# Test different configurations
+test_traffic "virtual-service-100-0.yaml" 100 0
+test_traffic "virtual-service-90-10.yaml" 90 10
+test_traffic "virtual-service-70-30.yaml" 70 30
+test_traffic "virtual-service-50-50.yaml" 50 50
+Make the script executable and run it:
+chmod +x test-traffic.sh
+./test-traffic.sh
+Task 3: Test A/B Testing Setup
+Subtask 3.1: Implement Header-Based Routing for A/B Testing
+Create A/B testing Virtual Service:
+Create the file k8s-configs/virtual-service-ab-testing.yaml:
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-virtual-service
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - myapp-gateway
+  http:
+  # Route for beta users (header-based)
+  - match:
+    - headers:
+        user-group:
+          exact: beta
+    route:
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 100
+  # Route for premium users (header-based)
+  - match:
+    - headers:
+        user-type:
+          exact: premium
+    route:
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 100
+  # Default route with traffic splitting
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: myapp-service
+        subset: v1
+      weight: 80
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 20
+Apply the A/B testing configuration:
+kubectl apply -f virtual-service-ab-testing.yaml
+Subtask 3.2: Create A/B Testing Scenarios
+Create comprehensive A/B testing script:
+Create the file ab-testing.sh:
+
+#!/bin/bash
+
+echo "=== A/B Testing Scenarios ==="
+echo
+
+# Function to make request and show result
+make_request() {
+    local description=$1
+    local headers=$2
+    
+    echo "Scenario: $description"
+    echo "Headers: $headers"
+    
+    if [[ -n "$headers" ]]; then
+        response=$(curl -s $headers http://localhost:8080/api/version)
+    else
+        response=$(curl -s http://localhost:8080/api/version)
+    fi
+    
+    version=$(echo $response | jq -r '.version')
+    message=$(echo $response | jq -r '.message')
+    
+    echo "Response Version: $version"
+    echo "Message: $message"
+    echo "----------------------------------------"
+}
+
+# Test different scenarios
+make_request "Regular user (no special headers)" ""
+make_request "Beta user" "-H 'user-group: beta'"
+make_request "Premium user" "-H 'user-type: premium'"
+make_request "Regular user with different header" "-H 'user-group: regular'"
+
+echo
+echo "=== Testing Default Traffic Distribution ==="
+echo "Making 50 requests without special headers..."
+
+v1_count=0
+v2_count=0
+total_requests=50
+
+for i in $(seq 1 $total_requests); do
+    version=$(curl -s http://localhost:8080/api/version | jq -r '.version')
+    if [[ "$version" == "1.0.0" ]]; then
+        ((v1_count++))
+    elif [[ "$version" == "2.0.0" ]]; then
+        ((v2_count++))
+    fi
+done
+
+v1_percentage=$((v1_count * 100 / total_requests))
+v2_percentage=$((v2_count * 100 / total_requests))
+
+echo "Distribution for regular users:"
+echo "V1: ${v1_percentage}% ($v1_count requests)"
+echo "V2: ${v2_percentage}% ($v2_count requests)"
+Run the A/B testing scenarios:
+chmod +x ab-testing.sh
+./ab-testing.sh
+Subtask 3.3: Implement User Session-Based Routing
+Create session-based routing configuration:
+Create the file k8s-configs/virtual-service-session-based.yaml:
+
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-virtual-service
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - myapp-gateway
+  http:
+  # Route based on session cookie
+  - match:
+    - headers:
+        cookie:
+          regex: ".*session-version=v2.*"
+    route:
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 100
+  # Route based on user ID (even numbers go to v2)
+  - match:
+    - headers:
+        user-id:
+          regex: ".*[02468]$"
+    route:
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 100
+  # Default route to v1
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: myapp-service
+        subset: v1
+      weight: 100
+Test session-based routing:
+Create the file session-testing.sh:
+
+#!/bin/bash
+
+echo "=== Session-Based Routing Tests ==="
+echo
+
+# Test with session cookie
+echo "Test 1: User with v2 session cookie"
+curl -s -H "Cookie: session-version=v2; other-cookie=value" http://localhost:8080/api/version | jq '.version, .message'
+echo
+
+echo "Test 2: User with v1 session cookie"
+curl -s -H "Cookie: session-version=v1; other-cookie=value" http://localhost:8080/api/version | jq '.version, .message'
+echo
+
+echo "Test 3: User with even ID (should go to v2)"
+curl -s -H "user-id: 1234" http://localhost:8080/api/version | jq '.version, .message'
+echo
+
+echo "Test 4: User with odd ID (should go to v1)"
+curl -s -H "user-id: 1235" http://localhost:8080/api/version | jq '.version, .message'
+echo
+
+echo "Test 5: User with no special headers (should go to v1)"
+curl -s http://localhost:8080/api/version | jq '.version, .message'
+Apply and test session-based routing:
+kubectl apply -f virtual-service-session-based.yaml
+chmod +x session-testing.sh
+./session-testing.sh
+Subtask 3.4: Monitor Traffic with Istio Dashboard
+Install Kiali for traffic visualization:
+# Install Kiali
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.20/samples/addons/kiali.yaml
+
+# Install Prometheus for metrics
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.20/samples/addons/prometheus.yaml
+
+# Install Grafana for dashboards
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.20/samples/addons/grafana.yaml
+
+# Wait for deployments
+kubectl rollout status deployment/kiali -n istio-system
+Generate traffic for monitoring:
+Create the file generate-traffic.sh:
+
+#!/bin/bash
+
+echo "Generating traffic for monitoring..."
+
+# Generate mixed traffic patterns
+for i in {1..100}; do
+    # Regular traffic
+    curl -s http://localhost:8080/api/version > /dev/null
+    
+    # Beta user traffic
+    if (( i % 10 == 0 )); then
+        curl -s -H "user-group: beta" http://localhost:8080/api/version > /dev/null
+    fi
+    
+    # Premium user traffic
+    if (( i % 15 == 0 )); then
+        curl -s -H "user-type: premium" http://localhost:8080/api/version > /dev/null
+    fi
+    
+    # Session-based traffic
+    if (( i % 7 == 0 )); then
+        curl -s -H "Cookie: session-version=v2" http://localhost:8080/api/version > /dev/null
+    fi
+    
+    sleep 0.1
+done
+
+echo "Traffic generation complete!"
+Access Kiali dashboard:
+# Start Kiali dashboard
+kubectl port-forward -n istio-system svc/kiali 20001:20001 &
+
+# Generate traffic
+chmod +x generate-traffic.sh
+./generate-traffic.sh
+
+echo "Access Kiali dashboard at: http://localhost:20001"
+echo "Username: admin, Password: admin"
+Advanced Configuration and Troubleshooting
+Common Issues and Solutions
+Issue: Pods not receiving traffic
+# Check if Istio sidecars are injected
+kubectl get pods -o jsonpath='{.items[*].spec.containers[*].name}'
+
+# If sidecars missing, restart deployments
+kubectl rollout restart deployment myapp-v1 myapp-v2
+Issue: Traffic not splitting as expected
+# Check Virtual Service configuration
+kubectl get virtualservice myapp-virtual-service -o yaml
+
+# Check Destination Rule
+kubectl get destinationrule myapp-destination-rule -o yaml
+
+# Verify service endpoints
+kubectl get endpoints myapp-service
+Issue: Gateway not accessible
+# Check gateway status
+kubectl get gateway myapp-gateway
+
+# Check ingress gateway pods
+kubectl get pods -n istio-system -l app=istio-ingressgateway
+
+# Check service
+kubectl get svc -n istio-system istio-ingressgateway
+Performance Testing Script
+Create the file performance-test.sh:
+
+#!/bin/bash
+
+echo "=== Performance Testing Different Routing Configurations ==="
+
+test_performance() {
+    local config_name=$1
+    local description=$2
+    
+    echo "Testing: $description"
+    kubectl apply -f $config_name
+    sleep 5
+    
+    # Use Apache Bench for performance testing
+    ab -n 1000 -c 10 http://localhost:8080/api/version
+    echo "----------------------------------------"
+}
+
+# Test different configurations
+test_performance "virtual-service-100-0.yaml" "100% V1 Traffic"
+test_performance "virtual-service-50-50.yaml" "50/50 Split"
+test_performance "virtual-service-ab-testing.yaml" "A/B Testing Configuration"
+Conclusion
+Congratulations! You have successfully completed Lab 8: Implement Dynamic Routing with Traffic Shifting. In this comprehensive lab, you have accomplished the following:
+
+Key Achievements
+Microservice Versioning: Created and deployed two versions of a microservice application with different features and capabilities.
+
+Dynamic Traffic Routing: Implemented progressive traffic shifting using Istio service mesh, allowing you to gradually move traffic from one version to another.
+
+A/B Testing Implementation: Set up sophisticated A/B testing scenarios using header-based routing, session-based routing, and user segmentation.
+
+Traffic Management: Learned to control traffic distribution using percentage-based routing and conditional routing rules.
+
+Monitoring and Observability: Integrated monitoring tools like Kiali, Prometheus, and Grafana to visualize traffic patterns and system behavior.
+
+Why This Matters
+Dynamic routing with traffic shifting is crucial for modern microservices architectures because it enables:
+
+Zero-Downtime Deployments: Gradually shift traffic to new versions without service interruption
+Risk Mitigation: Test new features with a small percentage of users before full rollout
+A/B Testing: Compare different versions to make data-driven decisions
+Canary Deployments: Detect issues early by exposing new versions to limited traffic
+Blue-Green Deployments: Maintain two identical production environments for instant rollback capability
+Real-World Applications
+The techniques you've learned are used by major technology companies for:
+
+Feature Rollouts: Gradually introducing new features to user segments
+Performance Testing: Comparing response times and resource usage between versions
+User Experience Optimization: Testing different UI/UX approaches
+Business Logic Validation: Ensuring new business rules work correctly before full deployment
+Compliance and Security: Testing security updates in controlled environments
+Next Steps
+To further enhance your skills in dynamic routing and traffic management:
+
+Explore advanced Istio features like circuit breakers and retry policies
+Implement automated traffic shifting based on metrics and SLAs
+Study chaos engineering principles for resilience testing
+Learn about multi-cluster traffic management
+Investigate GitOps approaches for managing traffic configurations
+This lab has provided you with practical, hands-on experience with enterprise-grade traffic management tools and techniques that are essential for building resilient, scalable microservices architectures in production environments.

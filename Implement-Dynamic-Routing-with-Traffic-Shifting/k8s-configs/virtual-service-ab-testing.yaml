@@ -1,0 +1,43 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-virtual-service
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - myapp-gateway
+  http:
+  # Route for beta users (header-based)
+  - match:
+    - headers:
+        user-group:
+          exact: beta
+    route:
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 100
+  # Route for premium users (header-based)
+  - match:
+    - headers:
+        user-type:
+          exact: premium
+    route:
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 100
+  # Default route with traffic splitting
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: myapp-service
+        subset: v1
+      weight: 80
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 20

@@ -1,0 +1,39 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: myapp-virtual-service
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - myapp-gateway
+  http:
+  # Route based on session cookie
+  - match:
+    - headers:
+        cookie:
+          regex: ".*session-version=v2.*"
+    route:
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 100
+  # Route based on user ID (even numbers go to v2)
+  - match:
+    - headers:
+        user-id:
+          regex: ".*[02468]$"
+    route:
+    - destination:
+        host: myapp-service
+        subset: v2
+      weight: 100
+  # Default route to v1
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: myapp-service
+        subset: v1
+      weight: 100
