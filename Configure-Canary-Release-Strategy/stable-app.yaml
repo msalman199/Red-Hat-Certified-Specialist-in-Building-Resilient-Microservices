@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-service-stable
+  namespace: canary-demo
+  labels:
+    app: product-service
+    version: stable
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: product-service
+      version: stable
+  template:
+    metadata:
+      labels:
+        app: product-service
+        version: stable
+    spec:
+      containers:
+      - name: product-service
+        image: nginx:1.20
+        ports:
+        - containerPort: 80
+        env:
+        - name: VERSION
+          value: "stable-v1.0"
+        volumeMounts:
+        - name: html-content
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html-content
+        configMap:
+          name: stable-content
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stable-content
+  namespace: canary-demo
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head><title>Product Service - Stable Version</title></head>
+    <body>
+        <h1>Product Service</h1>
+        <h2>Version: Stable v1.0</h2>
+        <p>This is the stable production version</p>
+        <div style="background-color: green; color: white; padding: 10px;">
+            Status: STABLE
+        </div>
+    </body>
+    </html>
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: product-service
+  namespace: canary-demo
+  labels:
+    app: product-service
+spec:
+  selector:
+    app: product-service
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http

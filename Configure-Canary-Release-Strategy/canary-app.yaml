@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: product-service-canary
+  namespace: canary-demo
+  labels:
+    app: product-service
+    version: canary
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: product-service
+      version: canary
+  template:
+    metadata:
+      labels:
+        app: product-service
+        version: canary
+    spec:
+      containers:
+      - name: product-service
+        image: nginx:1.21
+        ports:
+        - containerPort: 80
+        env:
+        - name: VERSION
+          value: "canary-v2.0"
+        volumeMounts:
+        - name: html-content
+          mountPath: /usr/share/nginx/html
+      volumes:
+      - name: html-content
+        configMap:
+          name: canary-content
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: canary-content
+  namespace: canary-demo
+data:
+  index.html: |
+    <!DOCTYPE html>
+    <html>
+    <head><title>Product Service - Canary Version</title></head>
+    <body>
+        <h1>Product Service</h1>
+        <h2>Version: Canary v2.0</h2>
+        <p>This is the new canary version with enhanced features</p>
+        <div style="background-color: orange; color: white; padding: 10px;">
+            Status: CANARY - Testing in Progress
+        </div>
+    </body>
+    </html>
