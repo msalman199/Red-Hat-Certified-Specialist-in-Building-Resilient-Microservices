@@ -1,0 +1,552 @@
+Lab 6: Trace Service Requests with Jaeger
+Objectives
+By the end of this lab, you will be able to:
+
+Install and configure Jaeger for distributed tracing in OpenShift Service Mesh
+Enable tracing across microservices in a service mesh environment
+Generate and analyze distributed traces to understand request flow
+Identify performance bottlenecks and latency issues using Jaeger UI
+Troubleshoot service-to-service communication failures using trace data
+Configure sampling strategies for optimal trace collection
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of microservices architecture
+Familiarity with Kubernetes/OpenShift concepts (pods, services, deployments)
+Knowledge of Istio service mesh fundamentals
+Experience with command-line interface (CLI) operations
+Understanding of HTTP request/response cycles
+Basic knowledge of YAML configuration files
+Technical Requirements:
+
+OpenShift cluster with Istio service mesh installed
+kubectl or oc CLI tool configured
+Administrative access to the cluster
+Ready-to-Use Cloud Machines
+Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to access your environment. No need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+OpenShift cluster with Istio service mesh
+Sample microservices application (Bookinfo)
+Pre-configured networking and security policies
+Command-line tools (kubectl, oc, curl)
+Task 1: Enable Distributed Tracing with Jaeger
+Subtask 1.1: Verify Service Mesh Installation
+First, let's verify that Istio service mesh is properly installed and running.
+
+# Check if Istio system namespace exists
+kubectl get namespace istio-system
+
+# Verify Istio components are running
+kubectl get pods -n istio-system
+
+# Check if the service mesh control plane is ready
+kubectl get servicemeshcontrolplane -n istio-system
+Expected output should show all Istio components in Running status.
+
+Subtask 1.2: Install Jaeger Operator
+Install the Jaeger operator which will manage Jaeger instances in your cluster.
+
+# Create the Jaeger operator namespace
+kubectl create namespace observability
+
+# Apply the Jaeger operator subscription
+cat <<EOF | kubectl apply -f -
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: jaeger-product
+  namespace: observability
+spec:
+  channel: stable
+  installPlanApproval: Automatic
+  name: jaeger-product
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+EOF
+Wait for the operator to be installed:
+
+# Check operator installation status
+kubectl get csv -n observability | grep jaeger
+
+# Verify operator pod is running
+kubectl get pods -n observability
+Subtask 1.3: Deploy Jaeger Instance
+Create a Jaeger instance for collecting and storing traces.
+
+# Create Jaeger instance configuration
+cat <<EOF | kubectl apply -f -
+apiVersion: jaegertracing.io/v1
+kind: Jaeger
+metadata:
+  name: jaeger-small-production
+  namespace: istio-system
+spec:
+  strategy: production
+  storage:
+    type: elasticsearch
+    elasticsearch:
+      nodeCount: 1
+      storage:
+        size: 1Gi
+      resources:
+        requests:
+          cpu: 200m
+          memory: 1Gi
+        limits:
+          cpu: 500m
+          memory: 2Gi
+  collector:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+  query:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+EOF
+Verify Jaeger deployment:
+
+# Check Jaeger pods status
+kubectl get pods -n istio-system | grep jaeger
+
+# Get Jaeger service information
+kubectl get svc -n istio-system | grep jaeger
+Subtask 1.4: Configure Service Mesh for Tracing
+Update the Istio configuration to enable tracing with Jaeger.
+
+# Create or update the telemetry configuration
+cat <<EOF | kubectl apply -f -
+apiVersion: install.istio.io/v1alpha1
+kind: IstioOperator
+metadata:
+  name: control-plane
+  namespace: istio-system
+spec:
+  values:
+    pilot:
+      traceSampling: 100.0
+    global:
+      tracer:
+        zipkin:
+          address: jaeger-small-production-collector.istio-system:9411
+  meshConfig:
+    defaultConfig:
+      tracing:
+        sampling: 100.0
+        zipkin:
+          address: jaeger-small-production-collector.istio-system:9411
+EOF
+Apply the configuration:
+
+# Restart Istio control plane to pick up new configuration
+kubectl rollout restart deployment/istiod -n istio-system
+
+# Wait for rollout to complete
+kubectl rollout status deployment/istiod -n istio-system
+Task 2: Trace Service Requests Across Microservices
+Subtask 2.1: Deploy Sample Application
+Deploy the Bookinfo application to demonstrate distributed tracing.
+
+# Create application namespace
+kubectl create namespace bookinfo
+
+# Label namespace for Istio injection
+kubectl label namespace bookinfo istio-injection=enabled
+
+# Deploy Bookinfo application
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.19/samples/bookinfo/platform/kube/bookinfo.yaml -n bookinfo
+
+# Deploy Bookinfo gateway and virtual service
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.19/samples/bookinfo/networking/bookinfo-gateway.yaml -n bookinfo
+Verify application deployment:
+
+# Check pod status
+kubectl get pods -n bookinfo
+
+# Verify services are created
+kubectl get svc -n bookinfo
+
+# Check gateway configuration
+kubectl get gateway -n bookinfo
+Subtask 2.2: Configure Application for Tracing
+Ensure the application is properly configured to generate traces.
+
+# Create destination rules for load balancing
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: productpage
+  namespace: bookinfo
+spec:
+  host: productpage
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: reviews
+  namespace: bookinfo
+spec:
+  host: reviews
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+  - name: v3
+    labels:
+      version: v3
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: ratings
+  namespace: bookinfo
+spec:
+  host: ratings
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: details
+  namespace: bookinfo
+spec:
+  host: details
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+EOF
+Subtask 2.3: Generate Traffic for Tracing
+Create traffic to generate traces across the microservices.
+
+# Get the ingress gateway URL
+export INGRESS_HOST=$(kubectl get po -l istio=ingressgateway -n istio-system -o jsonpath='{.items[0].status.hostIP}')
+export INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="http2")].nodePort}')
+export GATEWAY_URL=$INGRESS_HOST:$INGRESS_PORT
+
+# Generate traffic using a loop
+for i in {1..50}; do
+  curl -s "http://$GATEWAY_URL/productpage" > /dev/null
+  echo "Request $i sent"
+  sleep 1
+done
+Alternative method using a load generator:
+
+# Deploy a load generator pod
+cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  namespace: bookinfo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      containers:
+      - name: load-generator
+        image: busybox
+        command: ["/bin/sh"]
+        args: ["-c", "while true; do wget -q -O- http://productpage:9080/productpage; sleep 2; done"]
+EOF
+Subtask 2.4: Access Jaeger UI
+Set up access to the Jaeger user interface.
+
+# Create a route to Jaeger query service (OpenShift)
+oc expose svc jaeger-small-production-query -n istio-system
+
+# Get the Jaeger UI URL
+oc get route jaeger-small-production-query -n istio-system -o jsonpath='{.spec.host}'
+
+# For Kubernetes, use port-forward
+kubectl port-forward -n istio-system svc/jaeger-small-production-query 16686:16686
+Access the Jaeger UI at: http://localhost:16686 (if using port-forward) or the route URL (if using OpenShift).
+
+Task 3: Identify Latency and Failures in Service-to-Service Requests
+Subtask 3.1: Analyze Trace Data
+Navigate through the Jaeger UI to analyze traces:
+
+Service Selection: In the Jaeger UI, select productpage.bookinfo from the Service dropdown
+Operation Selection: Choose productpage.bookinfo: GET /productpage
+Time Range: Set an appropriate time range (last 1 hour)
+Find Traces: Click "Find Traces" to display collected traces
+Subtask 3.2: Examine Individual Traces
+Click on individual traces to examine detailed information:
+
+Key metrics to observe:
+
+Total Duration: Overall request processing time
+Span Count: Number of services involved in the request
+Service Dependencies: Visual representation of service calls
+Subtask 3.3: Introduce Latency for Analysis
+Create artificial latency to demonstrate trace analysis capabilities.
+
+# Create a virtual service with delay injection
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews-delay
+  namespace: bookinfo
+spec:
+  hosts:
+  - reviews
+  http:
+  - match:
+    - headers:
+        end-user:
+          exact: jason
+    fault:
+      delay:
+        percentage:
+          value: 100.0
+        fixedDelay: 7s
+    route:
+    - destination:
+        host: reviews
+        subset: v2
+  - route:
+    - destination:
+        host: reviews
+        subset: v1
+EOF
+Generate traffic with the delay:
+
+# Send requests with specific header to trigger delay
+for i in {1..10}; do
+  curl -s -H "end-user: jason" "http://$GATEWAY_URL/productpage" > /dev/null
+  echo "Delayed request $i sent"
+  sleep 2
+done
+Subtask 3.4: Introduce Errors for Failure Analysis
+Create error conditions to analyze failure traces.
+
+# Create a virtual service with error injection
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: ratings-error
+  namespace: bookinfo
+spec:
+  hosts:
+  - ratings
+  http:
+  - match:
+    - headers:
+        end-user:
+          exact: jason
+    fault:
+      abort:
+        percentage:
+          value: 100.0
+        httpStatus: 500
+    route:
+    - destination:
+        host: ratings
+        subset: v1
+  - route:
+    - destination:
+        host: ratings
+        subset: v1
+EOF
+Generate error traffic:
+
+# Send requests that will trigger errors
+for i in {1..10}; do
+  curl -s -H "end-user: jason" "http://$GATEWAY_URL/productpage" > /dev/null
+  echo "Error request $i sent"
+  sleep 2
+done
+Subtask 3.5: Advanced Trace Analysis
+Perform detailed analysis using Jaeger's advanced features:
+
+1. Compare Traces:
+
+# Generate normal and delayed requests alternately
+for i in {1..20}; do
+  if [ $((i % 2)) -eq 0 ]; then
+    curl -s -H "end-user: jason" "http://$GATEWAY_URL/productpage" > /dev/null
+    echo "Delayed request $i"
+  else
+    curl -s "http://$GATEWAY_URL/productpage" > /dev/null
+    echo "Normal request $i"
+  fi
+  sleep 1
+done
+2. Service Performance Analysis:
+
+In Jaeger UI:
+
+Navigate to "Service Performance" tab
+Select time range and services
+Analyze P95, P99 latency percentiles
+Identify performance bottlenecks
+3. Service Dependencies:
+
+Use the "Dependencies" view to:
+
+Visualize service interaction patterns
+Identify critical path dependencies
+Analyze request volume between services
+Subtask 3.6: Configure Sampling Strategies
+Optimize trace collection with sampling strategies.
+
+# Create sampling configuration
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jaeger-sampling-configuration
+  namespace: istio-system
+data:
+  sampling_strategies.json: |
+    {
+      "service_strategies": [
+        {
+          "service": "productpage.bookinfo",
+          "type": "probabilistic",
+          "param": 1.0
+        },
+        {
+          "service": "reviews.bookinfo",
+          "type": "probabilistic",
+          "param": 0.5
+        }
+      ],
+      "default_strategy": {
+        "type": "probabilistic",
+        "param": 0.1
+      }
+    }
+EOF
+Update Jaeger configuration to use sampling strategies:
+
+# Update Jaeger instance with sampling configuration
+kubectl patch jaeger jaeger-small-production -n istio-system --type='merge' -p='{"spec":{"sampling":{"options":{"configmap":"jaeger-sampling-configuration"}}}}'
+Subtask 3.7: Create Custom Dashboards
+Set up monitoring dashboards for trace analysis.
+
+# Create a service monitor for Jaeger metrics
+cat <<EOF | kubectl apply -f -
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: jaeger-metrics
+  namespace: istio-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jaeger
+  endpoints:
+  - port: admin-http
+    path: /metrics
+EOF
+Troubleshooting Common Issues
+Issue 1: Traces Not Appearing
+Symptoms: No traces visible in Jaeger UI
+
+Solutions:
+
+# Check if Jaeger collector is receiving traces
+kubectl logs -n istio-system deployment/jaeger-small-production-collector
+
+# Verify Istio proxy configuration
+kubectl exec -n bookinfo deployment/productpage-v1 -c istio-proxy -- curl localhost:15000/config_dump | grep tracing
+
+# Check sampling configuration
+kubectl get configmap istio -n istio-system -o yaml | grep -A 10 tracing
+Issue 2: High Memory Usage
+Symptoms: Jaeger components consuming excessive memory
+
+Solutions:
+
+# Adjust resource limits
+kubectl patch jaeger jaeger-small-production -n istio-system --type='merge' -p='{"spec":{"collector":{"resources":{"limits":{"memory":"512Mi"}}}}}'
+
+# Reduce trace retention period
+kubectl patch jaeger jaeger-small-production -n istio-system --type='merge' -p='{"spec":{"storage":{"options":{"es.index.cleaner.enabled":"true","es.index.cleaner.num-days":"7"}}}}'
+Issue 3: Missing Service Dependencies
+Symptoms: Services not showing in dependency graph
+
+Solutions:
+
+# Ensure proper service mesh injection
+kubectl get pods -n bookinfo -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].name}{"\n"}{end}' | grep istio-proxy
+
+# Check if services are properly configured
+kubectl get destinationrules -n bookinfo
+kubectl get virtualservices -n bookinfo
+Performance Optimization Tips
+Optimize Trace Collection
+# Configure adaptive sampling
+cat <<EOF | kubectl apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: adaptive-sampling-config
+  namespace: istio-system
+data:
+  sampling_strategies.json: |
+    {
+      "default_strategy": {
+        "type": "adaptive",
+        "max_traces_per_second": 100
+      }
+    }
+EOF
+Reduce Storage Requirements
+# Configure index lifecycle management
+kubectl patch jaeger jaeger-small-production -n istio-system --type='merge' -p='{"spec":{"storage":{"options":{"es.index.settings":"{\"index.number_of_replicas\":0}"}}}}'
+Conclusion
+In this lab, you have successfully:
+
+Implemented Jaeger for distributed tracing in an OpenShift Service Mesh environment, enabling comprehensive visibility into microservices interactions
+Configured end-to-end tracing across multiple microservices, allowing you to track requests as they flow through your distributed system
+Analyzed trace data to identify performance bottlenecks, latency issues, and service dependencies using Jaeger's powerful visualization tools
+Introduced controlled failures and delays to understand how distributed tracing helps in troubleshooting real-world issues
+Optimized trace collection through sampling strategies to balance observability needs with system performance
+Why This Matters:
+
+Distributed tracing with Jaeger is crucial for modern microservices architectures because it:
+
+Provides end-to-end visibility into complex distributed systems where a single user request may traverse multiple services
+Enables rapid troubleshooting by allowing developers to pinpoint exactly where failures or performance issues occur
+Supports performance optimization by identifying the slowest components in request processing chains
+Facilitates capacity planning by providing insights into service utilization patterns and dependencies
+Improves system reliability by helping teams understand cascading failure patterns and implement appropriate circuit breakers
+The skills you've developed in this lab are essential for maintaining and optimizing production microservices environments, making you better prepared for the Red Hat Certified Specialist in Building Resilient Microservices exam and real-world distributed systems challenges.
+
+Next Steps:
+
+Explore advanced Jaeger features like trace comparison and custom instrumentation
+Integrate tracing data with metrics and logs for comprehensive observability
+Implement automated alerting based on trace analysis patterns
+Practice with more complex microservices architectures and failure scenarios
