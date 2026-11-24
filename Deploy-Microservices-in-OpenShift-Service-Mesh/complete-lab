@@ -1,0 +1,361 @@
+Lab 4: Deploy Microservices in OpenShift Service Mesh
+Objectives
+By the end of this lab, you will be able to:
+
+Deploy a multi-tier microservices application within OpenShift Service Mesh
+Verify automatic sidecar proxy injection using Istio
+Configure and validate service-to-service communication through the mesh
+Monitor traffic flow between microservices using mesh observability features
+Understand the benefits of service mesh architecture for microservices communication
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with OpenShift CLI (oc) commands
+Knowledge of YAML configuration files
+Understanding of microservices architecture principles
+Completion of previous OpenShift Service Mesh installation labs
+Basic networking concepts knowledge
+Ready-to-Use Cloud Machines
+Al Nafi provides pre-configured Linux-based cloud machines with OpenShift and Service Mesh already installed. Simply click Start Lab to access your environment. No need to build your own VM or install software - everything is ready to use!
+
+Your lab environment includes:
+
+OpenShift cluster with Service Mesh operator installed
+Pre-configured Istio control plane
+Command-line tools (oc, kubectl, istioctl)
+Sample application code and configuration files
+Lab Tasks
+Task 1: Deploy a Microservices Application
+In this task, you will deploy a sample bookstore application consisting of multiple microservices that will communicate through the service mesh.
+
+Subtask 1.1: Create Project and Enable Service Mesh
+First, create a new project for your microservices application and add it to the service mesh.
+
+Create a new project:
+oc new-project bookstore-mesh
+Label the namespace for automatic sidecar injection:
+oc label namespace bookstore-mesh istio-injection=enabled
+Verify the namespace is labeled correctly:
+oc get namespace bookstore-mesh --show-labels
+You should see istio-injection=enabled in the labels output.
+
+Subtask 1.2: Deploy the Product Catalog Service
+Deploy the first microservice that will serve as the product catalog.
+
+Create the product catalog deployment:
+cat << 'EOF' > productcatalog-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: productcatalog
+  labels:
+    app: productcatalog
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: productcatalog
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: productcatalog
+        version: v1
+    spec:
+      containers:
+      - name: productcatalog
+        image: quay.io/redhattraining/ossm-productcatalog:1.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: productcatalog
+  labels:
+    app: productcatalog
+spec:
+  ports:
+  - port: 8080
+    name: http
+  selector:
+    app: productcatalog
+EOF
+Apply the product catalog configuration:
+oc apply -f productcatalog-deployment.yaml
+Verify the deployment:
+oc get pods -l app=productcatalog
+Subtask 1.3: Deploy the Reviews Service
+Deploy the reviews microservice that will communicate with the product catalog.
+
+Create the reviews service deployment:
+cat << 'EOF' > reviews-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reviews-v1
+  labels:
+    app: reviews
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reviews
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: reviews
+        version: v1
+    spec:
+      containers:
+      - name: reviews
+        image: quay.io/redhattraining/ossm-reviews:1.0
+        ports:
+        - containerPort: 9080
+        env:
+        - name: PRODUCTCATALOG_SERVICE
+          value: "productcatalog:8080"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviews
+  labels:
+    app: reviews
+spec:
+  ports:
+  - port: 9080
+    name: http
+  selector:
+    app: reviews
+EOF
+Apply the reviews service configuration:
+oc apply -f reviews-deployment.yaml
+Verify both services are running:
+oc get pods
+Subtask 1.4: Deploy the Frontend Service
+Deploy the frontend service that will serve as the entry point to your microservices application.
+
+Create the frontend deployment:
+cat << 'EOF' > frontend-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: frontend
+        version: v1
+    spec:
+      containers:
+      - name: frontend
+        image: quay.io/redhattraining/ossm-frontend:1.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: REVIEWS_SERVICE
+          value: "reviews:9080"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  labels:
+    app: frontend
+spec:
+  ports:
+  - port: 8080
+    name: http
+  selector:
+    app: frontend
+EOF
+Apply the frontend configuration:
+oc apply -f frontend-deployment.yaml
+Verify all services are deployed:
+oc get svc
+Task 2: Confirm Sidecar Proxy Injection
+In this task, you will verify that Istio has automatically injected sidecar proxies into your microservices pods.
+
+Subtask 2.1: Examine Pod Configuration
+Check that each pod now contains both the application container and the Istio sidecar proxy.
+
+List all pods with detailed information:
+oc get pods -o wide
+Check the number of containers in each pod:
+oc get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].name}{"\n"}{end}'
+You should see that each pod has two containers: your application container and the istio-proxy container.
+
+Subtask 2.2: Inspect Sidecar Proxy Details
+Examine the sidecar proxy configuration in detail.
+
+Describe a pod to see the sidecar proxy:
+POD_NAME=$(oc get pods -l app=frontend -o jsonpath='{.items[0].metadata.name}')
+oc describe pod $POD_NAME
+Check the Istio proxy logs:
+oc logs $POD_NAME -c istio-proxy
+Verify the Envoy admin interface is accessible:
+oc exec $POD_NAME -c istio-proxy -- curl -s localhost:15000/stats | head -10
+Subtask 2.3: Validate Proxy Configuration
+Use istioctl to validate the proxy configuration.
+
+Check proxy configuration status:
+istioctl proxy-status
+Get detailed proxy configuration for a specific pod:
+istioctl proxy-config cluster $POD_NAME.bookstore-mesh
+Task 3: Test Service-to-Service Communication via OpenShift Service Mesh
+In this task, you will test communication between your microservices and verify that traffic flows through the service mesh.
+
+Subtask 3.1: Create Gateway and Virtual Service
+Configure Istio Gateway and VirtualService to expose your application.
+
+Create the Gateway configuration:
+cat << 'EOF' > bookstore-gateway.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: bookstore-gateway
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: bookstore-vs
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - bookstore-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: frontend
+        port:
+          number: 8080
+EOF
+Apply the Gateway configuration:
+oc apply -f bookstore-gateway.yaml
+Verify the Gateway is created:
+oc get gateway
+oc get virtualservice
+Subtask 3.2: Test External Access
+Test access to your application through the Istio ingress gateway.
+
+Get the ingress gateway URL:
+export INGRESS_HOST=$(oc get route istio-ingressgateway -n istio-system -o jsonpath='{.spec.host}')
+echo "Application URL: http://$INGRESS_HOST"
+Test the application endpoint:
+curl -v http://$INGRESS_HOST/
+Test multiple requests to generate traffic:
+for i in {1..10}; do
+  curl -s http://$INGRESS_HOST/ | grep -o "Product Catalog\|Reviews"
+  sleep 1
+done
+Subtask 3.3: Test Internal Service Communication
+Verify that services can communicate with each other through the mesh.
+
+Test communication from frontend to reviews service:
+FRONTEND_POD=$(oc get pods -l app=frontend -o jsonpath='{.items[0].metadata.name}')
+oc exec $FRONTEND_POD -c frontend -- curl -s reviews:9080/health
+Test communication from reviews to productcatalog service:
+REVIEWS_POD=$(oc get pods -l app=reviews -o jsonpath='{.items[0].metadata.name}')
+oc exec $REVIEWS_POD -c reviews -- curl -s productcatalog:8080/products
+Verify service discovery through Envoy:
+oc exec $FRONTEND_POD -c istio-proxy -- curl -s localhost:15000/clusters | grep reviews
+Subtask 3.4: Monitor Traffic with Kiali
+Use Kiali to visualize service mesh traffic.
+
+Access Kiali dashboard:
+oc get route kiali -n istio-system -o jsonpath='{.spec.host}'
+Generate traffic for visualization:
+for i in {1..50}; do
+  curl -s http://$INGRESS_HOST/ > /dev/null
+  sleep 0.5
+done
+In the Kiali dashboard:
+Navigate to Graph
+Select the bookstore-mesh namespace
+Choose "Versioned app graph"
+Observe the traffic flow between services
+Subtask 3.5: Verify Service Mesh Metrics
+Check that the service mesh is collecting metrics from your microservices.
+
+View Envoy metrics from a pod:
+oc exec $FRONTEND_POD -c istio-proxy -- curl -s localhost:15000/stats | grep http_inbound
+Check Prometheus metrics:
+PROMETHEUS_URL=$(oc get route prometheus -n istio-system -o jsonpath='{.spec.host}')
+curl -s "http://$PROMETHEUS_URL/api/v1/query?query=istio_requests_total" | jq '.data.result[0].metric'
+Verify service mesh telemetry:
+istioctl proxy-config bootstrap $FRONTEND_POD.bookstore-mesh | grep telemetry -A 5
+Troubleshooting Tips
+Common Issues and Solutions
+Issue: Pods are not getting sidecar injection
+
+Solution: Verify namespace labeling with oc get namespace bookstore-mesh --show-labels
+Solution: Check if the ServiceMeshMemberRoll includes your namespace
+Issue: Services cannot communicate
+
+Solution: Verify services are in the same namespace or properly configured for cross-namespace communication
+Solution: Check NetworkPolicies that might be blocking traffic
+Issue: Gateway not accessible
+
+Solution: Verify the istio-ingressgateway service is running: oc get svc -n istio-system
+Solution: Check route configuration: oc get route -n istio-system
+Issue: Kiali dashboard not showing traffic
+
+Solution: Generate more traffic to make it visible
+Solution: Check time range settings in Kiali
+Solution: Verify telemetry configuration
+Verification Commands
+Use these commands to verify your setup:
+
+# Check all pods have 2 containers (app + sidecar)
+oc get pods -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].name}{"\n"}{end}'
+
+# Verify service mesh configuration
+istioctl analyze -n bookstore-mesh
+
+# Check proxy synchronization
+istioctl proxy-status
+
+# Test service connectivity
+oc exec deployment/frontend -c frontend -- curl -s reviews:9080/health
+Conclusion
+In this lab, you successfully:
+
+Deployed a multi-tier microservices application consisting of frontend, reviews, and product catalog services within OpenShift Service Mesh
+Verified automatic sidecar proxy injection by examining pod configurations and confirming that each pod contains both application and Istio proxy containers
+Configured and tested service-to-service communication through the mesh using Istio Gateway and VirtualService resources
+Monitored traffic flow using Kiali dashboard and verified that all communication flows through the service mesh proxies
+Validated mesh functionality by checking metrics, logs, and proxy configurations
+This hands-on experience demonstrates the power of service mesh architecture for microservices. The automatic sidecar injection provides transparent service-to-service communication, security, and observability without requiring changes to your application code. The service mesh handles complex networking concerns like load balancing, circuit breaking, and traffic management, allowing developers to focus on business logic rather than infrastructure concerns.
+
+Understanding these concepts is crucial for the Red Hat Certified Specialist in Building Resilient Microservices exam, as service mesh technology is becoming the standard for managing microservices communication in enterprise environments. The skills you've learned here will help you build more resilient, observable, and secure microservices architectures.
