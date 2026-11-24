@@ -1,0 +1,302 @@
+Lab 2: Install OpenShift Service Mesh
+Objectives
+By the end of this lab, you will be able to:
+
+• Install and configure OpenShift Service Mesh operators using the Operator Lifecycle Manager (OLM) • Create and configure a Service Mesh Control Plane (SMCP) for managing microservices • Verify the successful installation of OpenShift Service Mesh using both the OpenShift CLI and Web Console • Understand the core components of Istio-based service mesh architecture • Troubleshoot common installation issues and validate service mesh functionality
+
+Prerequisites
+Before starting this lab, you should have:
+
+• Basic understanding of Kubernetes and OpenShift concepts • Familiarity with microservices architecture principles • Knowledge of YAML configuration files • Experience with command-line interface operations • Understanding of container orchestration fundamentals • Access to OpenShift Container Platform 4.10 or later • Cluster administrator privileges on the OpenShift cluster
+
+Ready-to-Use Cloud Machines
+Al Nafi provides pre-configured Linux-based cloud machines with OpenShift Container Platform already installed. Simply click Start Lab to access your dedicated environment. No need to build your own virtual machine or install OpenShift from scratch.
+
+Your lab environment includes: • OpenShift Container Platform 4.12 or later • Pre-configured cluster with administrative access • OpenShift CLI (oc) tool installed and configured • Web browser access to OpenShift Web Console
+
+Task 1: Install Service Mesh Operators via Operator Lifecycle Manager
+Subtask 1.1: Access the OpenShift Web Console
+Open your web browser and navigate to the OpenShift Web Console URL provided in your lab environment
+Log in using the administrator credentials provided
+Verify you have cluster administrator privileges by checking the top-right corner shows your admin user
+Subtask 1.2: Install the Elasticsearch Operator
+The OpenShift Service Mesh requires the Elasticsearch Operator for distributed tracing functionality.
+
+In the OpenShift Web Console, navigate to Operators → OperatorHub
+In the search box, type Elasticsearch
+Click on the OpenShift Elasticsearch Operator tile
+Click Install
+Configure the installation settings:
+Installation Mode: All namespaces on the cluster
+Installed Namespace: openshift-operators-redhat
+Update Channel: stable
+Approval Strategy: Automatic
+Click Install to begin the installation
+Wait for the operator status to show Succeeded
+Subtask 1.3: Install the Red Hat OpenShift distributed tracing platform (Jaeger)
+Return to Operators → OperatorHub
+Search for Jaeger
+Click on the Red Hat OpenShift distributed tracing platform tile
+Click Install
+Configure the installation settings:
+Installation Mode: All namespaces on the cluster
+Installed Namespace: openshift-distributed-tracing
+Update Channel: stable
+Approval Strategy: Automatic
+Click Install
+Wait for the operator status to show Succeeded
+Subtask 1.4: Install the Kiali Operator
+Kiali provides observability and management capabilities for the service mesh.
+
+Navigate back to Operators → OperatorHub
+Search for Kiali
+Click on the Kiali Operator tile provided by Red Hat
+Click Install
+Configure the installation settings:
+Installation Mode: All namespaces on the cluster
+Installed Namespace: openshift-operators
+Update Channel: stable
+Approval Strategy: Automatic
+Click Install
+Wait for the operator status to show Succeeded
+Subtask 1.5: Install the Red Hat OpenShift Service Mesh Operator
+Return to Operators → OperatorHub
+Search for Service Mesh
+Click on the Red Hat OpenShift Service Mesh tile
+Click Install
+Configure the installation settings:
+Installation Mode: All namespaces on the cluster
+Installed Namespace: openshift-operators
+Update Channel: stable
+Approval Strategy: Automatic
+Click Install
+Wait for the operator status to show Succeeded
+Subtask 1.6: Verify Operator Installation via CLI
+Open a terminal or command prompt with access to the oc CLI
+Log in to your OpenShift cluster:
+oc login --server=<your-openshift-api-url> --username=<admin-username>
+Verify all required operators are installed:
+oc get csv -n openshift-operators
+Check for the following operators in the output:
+
+elasticsearch-operator
+jaeger-operator
+kiali-operator
+servicemeshoperator
+Verify operator pods are running:
+
+oc get pods -n openshift-operators | grep -E "(elasticsearch|jaeger|kiali|istio)"
+Task 2: Set up SMCP (Service Mesh Control Plane)
+Subtask 2.1: Create the Service Mesh Control Plane Namespace
+Create a dedicated namespace for the service mesh control plane:
+oc new-project istio-system
+Verify the namespace was created:
+oc get projects | grep istio-system
+Subtask 2.2: Create the Service Mesh Control Plane Configuration
+Create a YAML file for the Service Mesh Control Plane configuration:
+cat > smcp-basic.yaml << 'EOF'
+apiVersion: maistra.io/v2
+kind: ServiceMeshControlPlane
+metadata:
+  name: basic
+  namespace: istio-system
+spec:
+  version: v2.4
+  tracing:
+    type: Jaeger
+    sampling: 10000
+  addons:
+    jaeger:
+      name: jaeger
+      install:
+        storage:
+          type: Memory
+    kiali:
+      name: kiali
+      enabled: true
+      install:
+        dashboard:
+          viewOnly: false
+    grafana:
+      name: grafana
+      enabled: true
+  policy:
+    type: Istiod
+  telemetry:
+    type: Istiod
+  security:
+    dataPlane:
+      mtls: true
+    controlPlane:
+      mtls: true
+  gateways:
+    ClusterIngress:
+      enabled: true
+      runtime:
+        deployment:
+          autoScaling:
+            enabled: false
+        container:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 128Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+    ClusterEgress:
+      enabled: false
+EOF
+Apply the Service Mesh Control Plane configuration:
+oc apply -f smcp-basic.yaml
+Monitor the installation progress:
+oc get smcp -n istio-system
+Wait for the SMCP status to show ComponentsReady:
+oc get smcp basic -n istio-system -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+Subtask 2.3: Create a Service Mesh Member Roll
+The Service Mesh Member Roll defines which namespaces are part of the service mesh.
+
+Create a Service Mesh Member Roll configuration:
+cat > smmr-default.yaml << 'EOF'
+apiVersion: maistra.io/v1
+kind: ServiceMeshMemberRoll
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  members:
+  - bookinfo
+  - production
+  - testing
+EOF
+Apply the Service Mesh Member Roll:
+oc apply -f smmr-default.yaml
+Verify the member roll was created:
+oc get smmr -n istio-system
+Subtask 2.4: Verify Control Plane Components
+Check all control plane pods are running:
+oc get pods -n istio-system
+Verify the following components are present and running:
+
+istiod (Istio control plane)
+istio-proxy (sidecar injector)
+jaeger (distributed tracing)
+kiali (service mesh observability)
+grafana (metrics visualization)
+Check the status of each component:
+
+oc get pods -n istio-system -o wide
+Task 3: Verify Installation with oc CLI and Web UI
+Subtask 3.1: CLI Verification Commands
+Verify the Service Mesh Control Plane status:
+oc get smcp basic -n istio-system -o yaml
+Check the readiness conditions:
+oc get smcp basic -n istio-system -o jsonpath='{.status.conditions[*].type}{"\n"}{.status.conditions[*].status}'
+Verify all service mesh components:
+oc get all -n istio-system
+Check service mesh version information:
+oc get smcp basic -n istio-system -o jsonpath='{.status.appliedVersion}'
+Verify the member roll configuration:
+oc describe smmr default -n istio-system
+Subtask 3.2: Web Console Verification
+In the OpenShift Web Console, navigate to Operators → Installed Operators
+Select the istio-system project from the dropdown
+Click on Red Hat OpenShift Service Mesh
+Click on the Service Mesh Control Plane tab
+Verify that the basic control plane shows a status of ComponentsReady
+Click on the Service Mesh Member Roll tab
+Verify the default member roll is listed and shows the configured namespaces
+Subtask 3.3: Access Service Mesh Management Interfaces
+Get the Kiali route URL:
+oc get route kiali -n istio-system -o jsonpath='{.spec.host}'
+Access Kiali dashboard:
+
+Open the URL from step 1 in your browser
+Log in using your OpenShift credentials
+Verify the Kiali dashboard loads successfully
+Get the Jaeger route URL:
+
+oc get route jaeger -n istio-system -o jsonpath='{.spec.host}'
+Access Jaeger tracing interface:
+Open the Jaeger URL in your browser
+Verify the Jaeger interface is accessible
+Subtask 3.4: Test Service Mesh Functionality
+Create a test namespace to verify sidecar injection:
+oc new-project bookinfo
+Add the namespace to the service mesh:
+oc patch smmr default -n istio-system --type='json' -p='[{"op": "add", "path": "/spec/members/-", "value": "bookinfo"}]'
+Deploy a simple test application:
+cat > test-app.yaml << 'EOF'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: httpbin
+  namespace: bookinfo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: httpbin
+  template:
+    metadata:
+      labels:
+        app: httpbin
+      annotations:
+        sidecar.istio.io/inject: "true"
+    spec:
+      containers:
+      - name: httpbin
+        image: kennethreitz/httpbin
+        ports:
+        - containerPort: 80
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: httpbin
+  namespace: bookinfo
+spec:
+  selector:
+    app: httpbin
+  ports:
+  - port: 8000
+    targetPort: 80
+EOF
+Apply the test application:
+oc apply -f test-app.yaml
+Verify sidecar injection occurred:
+oc get pods -n bookinfo
+Check that the pod has 2 containers (application + istio-proxy):
+oc describe pod -l app=httpbin -n bookinfo
+Troubleshooting Tips
+Common Installation Issues
+Issue: Operators fail to install
+
+Solution: Verify cluster has sufficient resources and proper RBAC permissions
+Command: oc describe csv <operator-name> -n <namespace>
+Issue: SMCP installation hangs or fails
+
+Solution: Check operator logs and ensure all prerequisite operators are installed
+Command: oc logs -f deployment/istio-operator -n openshift-operators
+Issue: Pods stuck in pending state
+
+Solution: Check node resources and pod resource requests
+Command: oc describe pod <pod-name> -n istio-system
+Verification Commands
+Check operator health:
+
+oc get csv -A | grep -E "(servicemesh|kiali|jaeger|elasticsearch)"
+Monitor SMCP installation progress:
+
+watch oc get smcp basic -n istio-system
+View detailed SMCP status:
+
+oc describe smcp basic -n istio-system
+Conclusion
+In this lab, you have successfully:
+
+• Installed all required Service Mesh operators using the Operator Lifecycle Manager, including Elasticsearch, Jaeger, Kiali, and the main Service Mesh operator • Created and configured a Service Mesh Control Plane (SMCP) with essential components like Istio, Jaeger for tracing, and Kiali for observability • Verified the installation using both the OpenShift CLI and Web Console, ensuring all components are running correctly • Set up a Service Mesh Member Roll to define which namespaces participate in the service mesh • Tested the service mesh functionality by deploying a sample application with automatic sidecar injection
+
+This installation provides the foundation for implementing advanced microservices patterns such as traffic management, security policies, and observability. The service mesh will enable you to manage complex microservices architectures with features like mutual TLS, circuit breaking, load balancing, and distributed tracing.
+
+Understanding OpenShift Service Mesh installation is crucial for the Red Hat Certified Specialist in Building Resilient Microservices exam, as it demonstrates your ability to set up the infrastructure required for production-ready microservices deployments. The skills learned in this lab will enable you to implement robust, observable, and secure microservices architectures in enterprise environments.

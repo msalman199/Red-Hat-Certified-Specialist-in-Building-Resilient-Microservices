@@ -1,0 +1,51 @@
+apiVersion: maistra.io/v2
+kind: ServiceMeshControlPlane
+metadata:
+  name: basic
+  namespace: istio-system
+spec:
+  version: v2.4
+  tracing:
+    type: Jaeger
+    sampling: 10000
+  addons:
+    jaeger:
+      name: jaeger
+      install:
+        storage:
+          type: Memory
+    kiali:
+      name: kiali
+      enabled: true
+      install:
+        dashboard:
+          viewOnly: false
+    grafana:
+      name: grafana
+      enabled: true
+  policy:
+    type: Istiod
+  telemetry:
+    type: Istiod
+  security:
+    dataPlane:
+      mtls: true
+    controlPlane:
+      mtls: true
+  gateways:
+    ClusterIngress:
+      enabled: true
+      runtime:
+        deployment:
+          autoScaling:
+            enabled: false
+        container:
+          resources:
+            requests:
+              cpu: 10m
+              memory: 128Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+    ClusterEgress:
+      enabled: false
