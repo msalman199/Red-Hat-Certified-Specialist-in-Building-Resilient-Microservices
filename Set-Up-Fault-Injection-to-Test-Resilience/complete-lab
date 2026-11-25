@@ -1,0 +1,572 @@
+Lab 11: Set Up Fault Injection to Test Resilience
+Objectives
+By the end of this lab, you will be able to:
+
+Configure fault injection policies using Istio service mesh
+Simulate network latency and request failures in a microservices environment
+Monitor and analyze resilience mechanisms including retries, timeouts, and circuit breakers
+Validate service mesh resilience patterns through controlled failure scenarios
+Implement chaos engineering principles to improve system reliability
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with service mesh architecture and Istio fundamentals
+Knowledge of YAML configuration files
+Understanding of HTTP status codes and network protocols
+Experience with command-line tools and Linux environments
+Completion of previous service mesh labs or equivalent knowledge
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+Kubernetes cluster with Istio service mesh pre-installed
+kubectl command-line tool configured
+Sample microservices applications deployed
+Monitoring tools (Prometheus, Grafana, Jaeger) ready to use
+Task 1: Configure Fault Injection Policies
+Subtask 1.1: Verify Lab Environment and Sample Applications
+First, let's verify that our lab environment is ready and examine the sample applications.
+
+Check Kubernetes cluster status:
+kubectl get nodes
+kubectl get namespaces
+Verify Istio installation:
+kubectl get pods -n istio-system
+istioctl version
+Deploy sample bookinfo application (if not already deployed):
+# Create namespace and enable Istio injection
+kubectl create namespace bookinfo
+kubectl label namespace bookinfo istio-injection=enabled
+
+# Deploy the bookinfo application
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.20/samples/bookinfo/platform/kube/bookinfo.yaml -n bookinfo
+
+# Deploy the gateway
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.20/samples/bookinfo/networking/bookinfo-gateway.yaml -n bookinfo
+Verify application deployment:
+kubectl get pods -n bookinfo
+kubectl get services -n bookinfo
+Subtask 1.2: Create HTTP Fault Injection Policy
+Now we'll create fault injection policies to simulate various failure scenarios.
+
+Create a fault injection configuration for HTTP delays:
+cat > http-delay-fault.yaml << 'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews-delay-fault
+  namespace: bookinfo
+spec:
+  hosts:
+  - reviews
+  http:
+  - match:
+    - headers:
+        end-user:
+          exact: jason
+    fault:
+      delay:
+        percentage:
+          value: 100.0
+        fixedDelay: 7s
+    route:
+    - destination:
+        host: reviews
+        subset: v2
+  - route:
+    - destination:
+        host: reviews
+        subset: v1
+EOF
+Apply the delay fault injection:
+kubectl apply -f http-delay-fault.yaml
+Create destination rules for traffic routing:
+cat > reviews-destination-rule.yaml << 'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: reviews
+  namespace: bookinfo
+spec:
+  host: reviews
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+  - name: v3
+    labels:
+      version: v3
+EOF
+kubectl apply -f reviews-destination-rule.yaml
+Subtask 1.3: Create HTTP Abort Fault Injection Policy
+Create a fault injection configuration for HTTP aborts:
+cat > http-abort-fault.yaml << 'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: ratings-abort-fault
+  namespace: bookinfo
+spec:
+  hosts:
+  - ratings
+  http:
+  - match:
+    - headers:
+        end-user:
+          exact: jason
+    fault:
+      abort:
+        percentage:
+          value: 100.0
+        httpStatus: 500
+    route:
+    - destination:
+        host: ratings
+        subset: v1
+  - route:
+    - destination:
+        host: ratings
+        subset: v1
+EOF
+Apply the abort fault injection:
+kubectl apply -f http-abort-fault.yaml
+Create destination rule for ratings service:
+cat > ratings-destination-rule.yaml << 'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: ratings
+  namespace: bookinfo
+spec:
+  host: ratings
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+EOF
+kubectl apply -f ratings-destination-rule.yaml
+Task 2: Simulate Network Latency and Request Failures
+Subtask 2.1: Test Delay Fault Injection
+Get the gateway URL:
+export INGRESS_HOST=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+export INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="http2")].port}')
+export GATEWAY_URL=$INGRESS_HOST:$INGRESS_PORT
+
+echo "Gateway URL: http://$GATEWAY_URL"
+Test normal request without fault injection:
+# Test normal request
+curl -s -o /dev/null -w "Time: %{time_total}s, Status: %{http_code}\n" \
+  "http://$GATEWAY_URL/productpage"
+Test request with delay fault injection:
+# Test with jason user (should experience delay)
+curl -s -o /dev/null -w "Time: %{time_total}s, Status: %{http_code}\n" \
+  -H "Cookie: user=jason" \
+  "http://$GATEWAY_URL/productpage"
+Create a script to continuously test delay injection:
+cat > test-delay.sh << 'EOF'
+#!/bin/bash
+echo "Testing delay fault injection..."
+for i in {1..5}; do
+  echo "Request $i:"
+  echo -n "  Normal user: "
+  curl -s -o /dev/null -w "Time: %{time_total}s, Status: %{http_code}\n" \
+    "http://$GATEWAY_URL/productpage"
+  
+  echo -n "  Jason user: "
+  curl -s -o /dev/null -w "Time: %{time_total}s, Status: %{http_code}\n" \
+    -H "Cookie: user=jason" \
+    "http://$GATEWAY_URL/productpage"
+  echo "---"
+  sleep 2
+done
+EOF
+
+chmod +x test-delay.sh
+./test-delay.sh
+Subtask 2.2: Test Abort Fault Injection
+Test abort fault injection with browser simulation:
+# Test normal request
+curl -s -w "Status: %{http_code}, Time: %{time_total}s\n" \
+  "http://$GATEWAY_URL/productpage" | head -1
+
+# Test with jason user (should get 500 error from ratings service)
+curl -s -w "Status: %{http_code}, Time: %{time_total}s\n" \
+  -H "Cookie: user=jason" \
+  "http://$GATEWAY_URL/productpage" | head -1
+Create a comprehensive fault testing script:
+cat > test-faults.sh << 'EOF'
+#!/bin/bash
+GATEWAY_URL=$1
+
+if [ -z "$GATEWAY_URL" ]; then
+  echo "Usage: $0 <gateway-url>"
+  exit 1
+fi
+
+echo "=== Fault Injection Testing ==="
+echo "Gateway URL: $GATEWAY_URL"
+echo
+
+echo "1. Testing Normal Requests (no faults):"
+for i in {1..3}; do
+  echo -n "  Request $i: "
+  curl -s -o /dev/null -w "Status: %{http_code}, Time: %{time_total}s\n" \
+    "http://$GATEWAY_URL/productpage"
+done
+
+echo
+echo "2. Testing Delay Fault Injection (user=jason):"
+for i in {1..3}; do
+  echo -n "  Request $i: "
+  curl -s -o /dev/null -w "Status: %{http_code}, Time: %{time_total}s\n" \
+    -H "Cookie: user=jason" \
+    "http://$GATEWAY_URL/productpage"
+done
+
+echo
+echo "3. Testing Abort Fault Injection (user=jason):"
+for i in {1..3}; do
+  echo -n "  Request $i: "
+  response=$(curl -s -w "Status: %{http_code}, Time: %{time_total}s" \
+    -H "Cookie: user=jason" \
+    "http://$GATEWAY_URL/productpage")
+  echo "$response" | tail -1
+done
+EOF
+
+chmod +x test-faults.sh
+./test-faults.sh $GATEWAY_URL
+Subtask 2.3: Configure Advanced Fault Scenarios
+Create percentage-based fault injection:
+cat > percentage-fault.yaml << 'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews-percentage-fault
+  namespace: bookinfo
+spec:
+  hosts:
+  - reviews
+  http:
+  - fault:
+      delay:
+        percentage:
+          value: 50.0
+        fixedDelay: 3s
+      abort:
+        percentage:
+          value: 10.0
+        httpStatus: 503
+    route:
+    - destination:
+        host: reviews
+        subset: v1
+EOF
+kubectl apply -f percentage-fault.yaml
+Test percentage-based faults:
+cat > test-percentage-faults.sh << 'EOF'
+#!/bin/bash
+echo "Testing percentage-based fault injection (50% delay, 10% abort)..."
+success=0
+delayed=0
+failed=0
+
+for i in {1..20}; do
+  start_time=$(date +%s.%N)
+  status=$(curl -s -o /dev/null -w "%{http_code}" "http://$GATEWAY_URL/productpage")
+  end_time=$(date +%s.%N)
+  duration=$(echo "$end_time - $start_time" | bc)
+  
+  if [ "$status" = "200" ]; then
+    if (( $(echo "$duration > 2.5" | bc -l) )); then
+      delayed=$((delayed + 1))
+      echo "Request $i: SUCCESS with DELAY (${duration}s)"
+    else
+      success=$((success + 1))
+      echo "Request $i: SUCCESS (${duration}s)"
+    fi
+  else
+    failed=$((failed + 1))
+    echo "Request $i: FAILED ($status)"
+  fi
+done
+
+echo
+echo "Results:"
+echo "  Successful: $success"
+echo "  Delayed: $delayed"
+echo "  Failed: $failed"
+EOF
+
+chmod +x test-percentage-faults.sh
+./test-percentage-faults.sh
+Task 3: Monitor Resilience Mechanisms
+Subtask 3.1: Configure Retry Policies
+Create a retry policy configuration:
+cat > retry-policy.yaml << 'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews-retry
+  namespace: bookinfo
+spec:
+  hosts:
+  - reviews
+  http:
+  - fault:
+      abort:
+        percentage:
+          value: 50.0
+        httpStatus: 503
+    route:
+    - destination:
+        host: reviews
+        subset: v1
+    retries:
+      attempts: 3
+      perTryTimeout: 2s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+EOF
+kubectl apply -f retry-policy.yaml
+Test retry mechanism:
+cat > test-retries.sh << 'EOF'
+#!/bin/bash
+echo "Testing retry mechanism with 50% abort rate..."
+
+for i in {1..10}; do
+  echo -n "Request $i: "
+  start_time=$(date +%s.%N)
+  status=$(curl -s -o /dev/null -w "%{http_code}" "http://$GATEWAY_URL/productpage")
+  end_time=$(date +%s.%N)
+  duration=$(echo "$end_time - $start_time" | bc)
+  
+  echo "Status: $status, Duration: ${duration}s"
+done
+EOF
+
+chmod +x test-retries.sh
+./test-retries.sh
+Subtask 3.2: Configure Timeout Policies
+Create timeout policy:
+cat > timeout-policy.yaml << 'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews-timeout
+  namespace: bookinfo
+spec:
+  hosts:
+  - reviews
+  http:
+  - fault:
+      delay:
+        percentage:
+          value: 100.0
+        fixedDelay: 10s
+    route:
+    - destination:
+        host: reviews
+        subset: v1
+    timeout: 3s
+EOF
+kubectl apply -f timeout-policy.yaml
+Test timeout mechanism:
+cat > test-timeouts.sh << 'EOF'
+#!/bin/bash
+echo "Testing timeout mechanism (3s timeout with 10s delay)..."
+
+for i in {1..5}; do
+  echo -n "Request $i: "
+  start_time=$(date +%s.%N)
+  status=$(curl -s -o /dev/null -w "%{http_code}" "http://$GATEWAY_URL/productpage")
+  end_time=$(date +%s.%N)
+  duration=$(echo "$end_time - $start_time" | bc)
+  
+  echo "Status: $status, Duration: ${duration}s"
+done
+EOF
+
+chmod +x test-timeouts.sh
+./test-timeouts.sh
+Subtask 3.3: Configure Circuit Breaker Pattern
+Create circuit breaker configuration:
+cat > circuit-breaker.yaml << 'EOF'
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: reviews-circuit-breaker
+  namespace: bookinfo
+spec:
+  host: reviews
+  trafficPolicy:
+    outlierDetection:
+      consecutiveErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    connectionPool:
+      tcp:
+        maxConnections: 1
+      http:
+        http1MaxPendingRequests: 1
+        maxRequestsPerConnection: 2
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+EOF
+kubectl apply -f circuit-breaker.yaml
+Create load testing script to trigger circuit breaker:
+cat > test-circuit-breaker.sh << 'EOF'
+#!/bin/bash
+echo "Testing circuit breaker with concurrent requests..."
+
+# Function to make request
+make_request() {
+  local id=$1
+  status=$(curl -s -o /dev/null -w "%{http_code}" "http://$GATEWAY_URL/productpage")
+  echo "Request $id: Status $status"
+}
+
+# Make concurrent requests to trigger circuit breaker
+echo "Sending 20 concurrent requests..."
+for i in {1..20}; do
+  make_request $i &
+done
+
+wait
+echo "All requests completed"
+EOF
+
+chmod +x test-circuit-breaker.sh
+./test-circuit-breaker.sh
+Subtask 3.4: Monitor with Observability Tools
+Access Grafana dashboard:
+# Port forward Grafana
+kubectl port-forward -n istio-system svc/grafana 3000:3000 &
+echo "Grafana available at: http://localhost:3000"
+Access Jaeger for distributed tracing:
+# Port forward Jaeger
+kubectl port-forward -n istio-system svc/jaeger 16686:16686 &
+echo "Jaeger available at: http://localhost:16686"
+Query Prometheus metrics:
+# Port forward Prometheus
+kubectl port-forward -n istio-system svc/prometheus 9090:9090 &
+echo "Prometheus available at: http://localhost:9090"
+
+# Example queries for fault injection metrics
+echo "
+Useful Prometheus queries for fault injection:
+1. Request rate: rate(istio_requests_total[5m])
+2. Error rate: rate(istio_requests_total{response_code!~\"2..\"}[5m])
+3. Request duration: histogram_quantile(0.99, rate(istio_request_duration_milliseconds_bucket[5m]))
+"
+Create monitoring script:
+cat > monitor-faults.sh << 'EOF'
+#!/bin/bash
+echo "Monitoring fault injection effects..."
+
+while true; do
+  echo "=== $(date) ==="
+  
+  # Check pod status
+  echo "Pod Status:"
+  kubectl get pods -n bookinfo | grep -E "(reviews|ratings)"
+  
+  # Make test requests
+  echo "Test Requests:"
+  normal_status=$(curl -s -o /dev/null -w "%{http_code}" "http://$GATEWAY_URL/productpage")
+  jason_status=$(curl -s -o /dev/null -w "%{http_code}" -H "Cookie: user=jason" "http://$GATEWAY_URL/productpage")
+  
+  echo "  Normal user: $normal_status"
+  echo "  Jason user: $jason_status"
+  
+  echo "---"
+  sleep 10
+done
+EOF
+
+chmod +x monitor-faults.sh
+Troubleshooting Common Issues
+Issue 1: Fault Injection Not Working
+Problem: Fault injection policies are not taking effect.
+
+Solution:
+
+# Check if virtual services are applied correctly
+kubectl get virtualservices -n bookinfo
+
+# Verify destination rules
+kubectl get destinationrules -n bookinfo
+
+# Check Istio proxy configuration
+kubectl exec -n bookinfo deployment/productpage-v1 -c istio-proxy -- pilot-agent request GET config_dump
+Issue 2: Gateway URL Not Accessible
+Problem: Cannot access the application through the gateway.
+
+Solution:
+
+# Check ingress gateway status
+kubectl get svc -n istio-system istio-ingressgateway
+
+# Verify gateway configuration
+kubectl get gateway -n bookinfo
+
+# Check if using NodePort instead of LoadBalancer
+export INGRESS_PORT=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="http2")].nodePort}')
+export INGRESS_HOST=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="ExternalIP")].address}')
+Issue 3: Monitoring Tools Not Accessible
+Problem: Cannot access Grafana, Jaeger, or Prometheus.
+
+Solution:
+
+# Check if monitoring tools are running
+kubectl get pods -n istio-system | grep -E "(grafana|jaeger|prometheus)"
+
+# Kill existing port forwards and restart
+pkill -f "kubectl port-forward"
+kubectl port-forward -n istio-system svc/grafana 3000:3000 &
+kubectl port-forward -n istio-system svc/jaeger 16686:16686 &
+kubectl port-forward -n istio-system svc/prometheus 9090:9090 &
+Lab Cleanup
+When you're finished with the lab, clean up the resources:
+
+# Remove fault injection policies
+kubectl delete virtualservice reviews-delay-fault -n bookinfo
+kubectl delete virtualservice ratings-abort-fault -n bookinfo
+kubectl delete virtualservice reviews-percentage-fault -n bookinfo
+kubectl delete virtualservice reviews-retry -n bookinfo
+kubectl delete virtualservice reviews-timeout -n bookinfo
+
+# Remove destination rules
+kubectl delete destinationrule reviews -n bookinfo
+kubectl delete destinationrule ratings -n bookinfo
+kubectl delete destinationrule reviews-circuit-breaker -n bookinfo
+
+# Stop port forwards
+pkill -f "kubectl port-forward"
+
+# Optional: Remove the entire bookinfo application
+kubectl delete namespace bookinfo
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Configured fault injection policies using Istio VirtualServices to simulate real-world failure scenarios
+Implemented delay and abort faults to test how your applications handle network latency and service failures
+Created percentage-based fault injection to simulate realistic failure rates in production environments
+Configured resilience mechanisms including retry policies, timeouts, and circuit breakers
+Monitored fault injection effects using Grafana, Jaeger, and Prometheus observability tools
+Validated service mesh resilience patterns through controlled chaos engineering experiments
+Why This Matters: Fault injection is a critical practice in building resilient microservices architectures. By proactively testing how your services behave under failure conditions, you can:
+
+Identify weak points in your system before they cause production outages
+Validate that retry and timeout policies work as expected
+Ensure circuit breakers properly protect downstream services
+Build confidence in your system's ability to handle real-world failures
+Implement chaos engineering principles to continuously improve reliability
+This hands-on experience with fault injection prepares you for the Red Hat Certified Specialist in Building Resilient Microservices exam and provides practical skills for implementing robust, production-ready microservices architectures. The techniques you've learned here are essential for maintaining high availability and reliability in distributed systems, making your applications more resilient to the inevitable failures that occur in complex, distributed environments.

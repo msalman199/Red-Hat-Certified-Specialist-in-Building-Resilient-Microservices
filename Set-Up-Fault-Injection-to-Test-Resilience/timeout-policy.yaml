@@ -1,0 +1,19 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews-timeout
+  namespace: bookinfo
+spec:
+  hosts:
+  - reviews
+  http:
+  - fault:
+      delay:
+        percentage:
+          value: 100.0
+        fixedDelay: 10s
+    route:
+    - destination:
+        host: reviews
+        subset: v1
+    timeout: 3s
