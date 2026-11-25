@@ -1,0 +1,1337 @@
+Lab 18: Use Health Probes with OpenShift Service Mesh
+Objectives
+By the end of this lab, you will be able to:
+
+Configure Kubernetes readiness and liveness probes for microservices
+Integrate health probes with OpenShift Service Mesh components
+Monitor service health status through Istio service mesh
+Implement automated recovery actions based on probe failures
+Analyze service mesh traffic routing based on health probe results
+Troubleshoot common health probe configuration issues
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with OpenShift Service Mesh (Istio) fundamentals
+Knowledge of YAML configuration files
+Understanding of HTTP status codes and health check endpoints
+Experience with command-line interface operations
+Lab Environment
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift and Service Mesh already installed. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+OpenShift cluster with Service Mesh operator installed
+kubectl and oc CLI tools configured
+Sample microservices applications
+Monitoring and observability tools
+Task 1: Set up Kubernetes Readiness and Liveness Probes
+Subtask 1.1: Create a Sample Application with Health Endpoints
+First, we'll deploy a sample application that includes health check endpoints.
+
+Create a new project namespace for our lab:
+oc new-project health-probe-lab
+Create a sample application with health endpoints. Save the following as sample-app.yaml:
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-demo-app
+  namespace: health-probe-lab
+  labels:
+    app: health-demo
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: health-demo
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: health-demo
+        version: v1
+    spec:
+      containers:
+      - name: health-demo
+        image: quay.io/redhattraining/health-probe-demo:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: STARTUP_DELAY
+          value: "10"
+        - name: READINESS_DELAY
+          value: "5"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: health-demo-service
+  namespace: health-probe-lab
+  labels:
+    app: health-demo
+spec:
+  selector:
+    app: health-demo
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+Deploy the application:
+oc apply -f sample-app.yaml
+Verify the deployment:
+oc get pods -n health-probe-lab
+oc get svc -n health-probe-lab
+Subtask 1.2: Configure Liveness Probes
+Liveness probes determine if a container is running properly. If a liveness probe fails, Kubernetes will restart the container.
+
+Create an updated deployment with liveness probes. Save as app-with-liveness.yaml:
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-demo-app
+  namespace: health-probe-lab
+  labels:
+    app: health-demo
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: health-demo
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: health-demo
+        version: v1
+    spec:
+      containers:
+      - name: health-demo
+        image: quay.io/redhattraining/health-probe-demo:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: STARTUP_DELAY
+          value: "10"
+        - name: READINESS_DELAY
+          value: "5"
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+Apply the updated configuration:
+oc apply -f app-with-liveness.yaml
+Monitor the pod status and events:
+oc describe pods -l app=health-demo -n health-probe-lab
+Subtask 1.3: Configure Readiness Probes
+Readiness probes determine if a container is ready to receive traffic. Failed readiness probes remove the pod from service endpoints.
+
+Create a deployment with both liveness and readiness probes. Save as app-with-probes.yaml:
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-demo-app
+  namespace: health-probe-lab
+  labels:
+    app: health-demo
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: health-demo
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: health-demo
+        version: v1
+    spec:
+      containers:
+      - name: health-demo
+        image: quay.io/redhattraining/health-probe-demo:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: STARTUP_DELAY
+          value: "10"
+        - name: READINESS_DELAY
+          value: "5"
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+        startupProbe:
+          httpGet:
+            path: /health/startup
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 2
+          timeoutSeconds: 3
+          failureThreshold: 15
+          successThreshold: 1
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+Apply the complete probe configuration:
+oc apply -f app-with-probes.yaml
+Verify probe configuration:
+oc describe deployment health-demo-app -n health-probe-lab
+Task 2: Integrate Probes with OpenShift Service Mesh
+Subtask 2.1: Enable Service Mesh for the Namespace
+First, verify that the Service Mesh Control Plane is installed:
+oc get smcp -n istio-system
+Create a ServiceMeshMemberRoll to include our namespace. Save as member-roll.yaml:
+apiVersion: maistra.io/v1
+kind: ServiceMeshMemberRoll
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  members:
+  - health-probe-lab
+Apply the member roll configuration:
+oc apply -f member-roll.yaml
+Verify the namespace is part of the service mesh:
+oc get smmr -n istio-system -o yaml
+Subtask 2.2: Configure Istio Sidecar Injection
+Enable automatic sidecar injection for the namespace:
+oc label namespace health-probe-lab istio-injection=enabled
+Restart the deployment to inject sidecars:
+oc rollout restart deployment/health-demo-app -n health-probe-lab
+Verify sidecar injection:
+oc get pods -n health-probe-lab
+You should see 2/2 containers running (application + Istio proxy).
+
+Check the sidecar configuration:
+oc describe pod -l app=health-demo -n health-probe-lab
+Subtask 2.3: Create Istio Virtual Service and Destination Rule
+Create a Virtual Service to manage traffic routing. Save as virtual-service.yaml:
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: health-demo-vs
+  namespace: health-probe-lab
+spec:
+  hosts:
+  - health-demo-service
+  http:
+  - match:
+    - headers:
+        end-user:
+          exact: test
+    route:
+    - destination:
+        host: health-demo-service
+        subset: v1
+      weight: 100
+  - route:
+    - destination:
+        host: health-demo-service
+        subset: v1
+      weight: 100
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: health-demo-dr
+  namespace: health-probe-lab
+spec:
+  host: health-demo-service
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  trafficPolicy:
+    outlierDetection:
+      consecutiveErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    healthCheck:
+      path: /health/ready
+      intervalSeconds: 10
+      timeoutSeconds: 3
+      unhealthyThreshold: 3
+      healthyThreshold: 2
+Apply the Istio configuration:
+oc apply -f virtual-service.yaml
+Verify the configuration:
+oc get virtualservice,destinationrule -n health-probe-lab
+Subtask 2.4: Configure Service Mesh Gateway
+Create a Gateway to expose the service. Save as gateway.yaml:
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: health-demo-gateway
+  namespace: health-probe-lab
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - health-demo.apps.cluster.local
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: health-demo-gateway-vs
+  namespace: health-probe-lab
+spec:
+  hosts:
+  - health-demo.apps.cluster.local
+  gateways:
+  - health-demo-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: health-demo-service
+        port:
+          number: 8080
+Apply the gateway configuration:
+oc apply -f gateway.yaml
+Get the ingress gateway URL:
+export INGRESS_HOST=$(oc get route istio-ingressgateway -n istio-system -o jsonpath='{.spec.host}')
+echo "Gateway URL: http://$INGRESS_HOST"
+Task 3: Monitor Service Health and Recovery Actions
+Subtask 3.1: Set Up Health Monitoring
+Create a script to monitor pod health status. Save as monitor-health.sh:
+#!/bin/bash
+
+echo "=== Health Probe Monitoring Script ==="
+echo "Monitoring pods in health-probe-lab namespace..."
+echo
+
+while true; do
+    echo "$(date): Checking pod status..."
+    
+    # Get pod status
+    oc get pods -n health-probe-lab -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,READY:.status.containerStatuses[*].ready,RESTARTS:.status.containerStatuses[*].restartCount
+    
+    echo
+    echo "Checking service endpoints..."
+    oc get endpoints health-demo-service -n health-probe-lab -o yaml | grep -A 10 addresses
+    
+    echo "----------------------------------------"
+    sleep 10
+done
+Make the script executable and run it in a separate terminal:
+chmod +x monitor-health.sh
+./monitor-health.sh
+Subtask 3.2: Test Liveness Probe Failure
+Create a script to simulate liveness probe failure. Save as test-liveness.sh:
+#!/bin/bash
+
+# Get a pod name
+POD_NAME=$(oc get pods -n health-probe-lab -l app=health-demo -o jsonpath='{.items[0].metadata.name}')
+
+echo "Testing liveness probe failure on pod: $POD_NAME"
+
+# Simulate liveness probe failure
+oc exec -n health-probe-lab $POD_NAME -c health-demo -- curl -X POST http://localhost:8080/health/live/disable
+
+echo "Liveness probe disabled. Monitor the pod for restart..."
+echo "Pod will be restarted by Kubernetes when liveness probe fails."
+
+# Monitor pod events
+oc get events -n health-probe-lab --field-selector involvedObject.name=$POD_NAME --sort-by='.lastTimestamp'
+Run the liveness test:
+chmod +x test-liveness.sh
+./test-liveness.sh
+Watch the pod restart:
+oc get pods -n health-probe-lab -w
+Subtask 3.3: Test Readiness Probe Failure
+Create a script to test readiness probe failure. Save as test-readiness.sh:
+#!/bin/bash
+
+# Get a pod name
+POD_NAME=$(oc get pods -n health-probe-lab -l app=health-demo -o jsonpath='{.items[0].metadata.name}')
+
+echo "Testing readiness probe failure on pod: $POD_NAME"
+
+# Check current endpoints
+echo "Current service endpoints:"
+oc get endpoints health-demo-service -n health-probe-lab
+
+# Simulate readiness probe failure
+oc exec -n health-probe-lab $POD_NAME -c health-demo -- curl -X POST http://localhost:8080/health/ready/disable
+
+echo "Readiness probe disabled. Pod should be removed from service endpoints..."
+
+# Wait and check endpoints again
+sleep 15
+echo "Service endpoints after readiness failure:"
+oc get endpoints health-demo-service -n health-probe-lab
+
+# Re-enable readiness
+echo "Re-enabling readiness probe..."
+oc exec -n health-probe-lab $POD_NAME -c health-demo -- curl -X POST http://localhost:8080/health/ready/enable
+
+sleep 10
+echo "Service endpoints after readiness recovery:"
+oc get endpoints health-demo-service -n health-probe-lab
+Run the readiness test:
+chmod +x test-readiness.sh
+./test-readiness.sh
+Subtask 3.4: Monitor Service Mesh Health Integration
+Check Istio proxy health status:
+# Check Envoy admin interface
+POD_NAME=$(oc get pods -n health-probe-lab -l app=health-demo -o jsonpath='{.items[0].metadata.name}')
+
+oc exec -n health-probe-lab $POD_NAME -c istio-proxy -- curl -s localhost:15000/clusters | grep health-demo
+View Istio configuration for health checks:
+# Check Envoy configuration
+oc exec -n health-probe-lab $POD_NAME -c istio-proxy -- curl -s localhost:15000/config_dump | grep -A 20 -B 5 health_check
+Monitor traffic through Kiali (if available):
+# Get Kiali route
+oc get route kiali -n istio-system
+
+# Access Kiali dashboard to view service health
+echo "Access Kiali dashboard to monitor service mesh health"
+Subtask 3.5: Test Automated Recovery Actions
+Create a comprehensive test script. Save as test-recovery.sh:
+#!/bin/bash
+
+echo "=== Testing Automated Recovery Actions ==="
+
+# Function to check pod health
+check_pod_health() {
+    echo "Current pod status:"
+    oc get pods -n health-probe-lab -l app=health-demo
+    echo
+}
+
+# Function to check service endpoints
+check_endpoints() {
+    echo "Service endpoints:"
+    oc get endpoints health-demo-service -n health-probe-lab -o jsonpath='{.subsets[*].addresses[*].ip}' | wc -w
+    echo
+}
+
+# Test 1: Liveness probe failure and recovery
+echo "Test 1: Liveness Probe Failure and Recovery"
+echo "============================================"
+
+POD_NAME=$(oc get pods -n health-probe-lab -l app=health-demo -o jsonpath='{.items[0].metadata.name}')
+echo "Target pod: $POD_NAME"
+
+check_pod_health
+INITIAL_RESTART_COUNT=$(oc get pod $POD_NAME -n health-probe-lab -o jsonpath='{.status.containerStatuses[0].restartCount}')
+echo "Initial restart count: $INITIAL_RESTART_COUNT"
+
+# Disable liveness probe
+echo "Disabling liveness probe..."
+oc exec -n health-probe-lab $POD_NAME -c health-demo -- curl -X POST http://localhost:8080/health/live/disable
+
+# Wait for restart
+echo "Waiting for pod restart..."
+sleep 60
+
+check_pod_health
+NEW_RESTART_COUNT=$(oc get pod $POD_NAME -n health-probe-lab -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
+echo "New restart count: $NEW_RESTART_COUNT"
+
+if [ "$NEW_RESTART_COUNT" -gt "$INITIAL_RESTART_COUNT" ]; then
+    echo "✓ Liveness probe failure triggered pod restart successfully"
+else
+    echo "✗ Pod restart not detected"
+fi
+
+echo
+echo "Test 2: Readiness Probe Failure and Traffic Removal"
+echo "=================================================="
+
+# Get fresh pod name after potential restart
+POD_NAME=$(oc get pods -n health-probe-lab -l app=health-demo -o jsonpath='{.items[0].metadata.name}')
+
+INITIAL_ENDPOINTS=$(oc get endpoints health-demo-service -n health-probe-lab -o jsonpath='{.subsets[*].addresses[*].ip}' | wc -w)
+echo "Initial endpoint count: $INITIAL_ENDPOINTS"
+
+# Disable readiness probe
+echo "Disabling readiness probe..."
+oc exec -n health-probe-lab $POD_NAME -c health-demo -- curl -X POST http://localhost:8080/health/ready/disable
+
+sleep 20
+NEW_ENDPOINTS=$(oc get endpoints health-demo-service -n health-probe-lab -o jsonpath='{.subsets[*].addresses[*].ip}' | wc -w)
+echo "Endpoint count after readiness failure: $NEW_ENDPOINTS"
+
+if [ "$NEW_ENDPOINTS" -lt "$INITIAL_ENDPOINTS" ]; then
+    echo "✓ Readiness probe failure removed pod from service endpoints"
+else
+    echo "✗ Pod was not removed from service endpoints"
+fi
+
+# Re-enable readiness probe
+echo "Re-enabling readiness probe..."
+oc exec -n health-probe-lab $POD_NAME -c health-demo -- curl -X POST http://localhost:8080/health/ready/enable
+
+sleep 15
+FINAL_ENDPOINTS=$(oc get endpoints health-demo-service -n health-probe-lab -o jsonpath='{.subsets[*].addresses[*].ip}' | wc -w)
+echo "Final endpoint count: $FINAL_ENDPOINTS"
+
+if [ "$FINAL_ENDPOINTS" -eq "$INITIAL_ENDPOINTS" ]; then
+    echo "✓ Pod successfully re-added to service endpoints"
+else
+    echo "✗ Pod was not re-added to service endpoints"
+fi
+
+echo
+echo "=== Recovery Test Complete ==="
+Run the comprehensive recovery test:
+chmod +x test-recovery.sh
+./test-recovery.sh
+Subtask 3.6: Configure Advanced Health Check Scenarios
+Create a deployment with custom health check logic. Save as advanced-health-app.yaml:
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: advanced-health-demo
+  namespace: health-probe-lab
+  labels:
+    app: advanced-health-demo
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: advanced-health-demo
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: advanced-health-demo
+        version: v1
+    spec:
+      containers:
+      - name: advanced-health-demo
+        image: quay.io/redhattraining/health-probe-demo:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: HEALTH_CHECK_DELAY
+          value: "2"
+        - name: FAILURE_RATE
+          value: "0.1"
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+            httpHeaders:
+            - name: Custom-Header
+              value: liveness-check
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 2
+          successThreshold: 1
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+            httpHeaders:
+            - name: Custom-Header
+              value: readiness-check
+          initialDelaySeconds: 5
+          periodSeconds: 3
+          timeoutSeconds: 2
+          failureThreshold: 2
+          successThreshold: 1
+        startupProbe:
+          httpGet:
+            path: /health/startup
+            port: 8080
+          initialDelaySeconds: 0
+          periodSeconds: 1
+          timeoutSeconds: 1
+          failureThreshold: 30
+          successThreshold: 1
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: advanced-health-demo-service
+  namespace: health-probe-lab
+  labels:
+    app: advanced-health-demo
+spec:
+  selector:
+    app: advanced-health-demo
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+Deploy the advanced health application:
+oc apply -f advanced-health-app.yaml
+Monitor the advanced health checks:
+oc get pods -l app=advanced-health-demo -n health-probe-lab -w
+Troubleshooting Common Issues
+Issue 1: Probes Failing Due to Slow Application Startup
+Symptoms: Pods continuously restart during startup
+
+Solution:
+
+# Increase initialDelaySeconds and use startup probes
+# Update deployment with longer delays
+oc patch deployment health-demo-app -n health-probe-lab -p '{"spec":{"template":{"spec":{"containers":[{"name":"health-demo","livenessProbe":{"initialDelaySeconds":30}}]}}}}'
+Issue 2: Service Mesh Sidecar Interfering with Health Checks
+Symptoms: Health checks work without service mesh but fail with sidecars
+
+Solution:
+
+# Check if probes are hitting the sidecar instead of the application
+oc logs -n health-probe-lab -l app=health-demo -c istio-proxy
+
+# Ensure probes target the correct port
+oc describe pod -l app=health-demo -n health-probe-lab
+Issue 3: Readiness Probe Not Removing Pod from Endpoints
+Symptoms: Failed readiness probes don't remove pod from service
+
+Solution:
+
+# Check service selector matches pod labels
+oc get service health-demo-service -n health-probe-lab -o yaml
+oc get pods -l app=health-demo -n health-probe-lab --show-labels
+
+# Verify endpoint controller is working
+oc get events -n health-probe-lab | grep endpoints
+Conclusion
+In this lab, you have successfully:
+
+Configured comprehensive health probes including liveness, readiness, and startup probes for microservices running in OpenShift
+Integrated health probes with OpenShift Service Mesh by enabling sidecar injection and configuring Istio traffic management policies
+Monitored service health and recovery actions by observing how Kubernetes automatically restarts failed containers and removes unhealthy pods from service endpoints
+Tested automated recovery scenarios to validate that the service mesh properly handles health probe failures and traffic routing
+Implemented advanced health check configurations with custom headers and failure thresholds
+Why This Matters: Health probes are critical for building resilient microservices architectures. When integrated with service mesh technology, they provide:
+
+Automated failure detection and recovery without manual intervention
+Intelligent traffic routing that avoids sending requests to unhealthy services
+Improved application availability through proactive health monitoring
+Better observability into service health status across the entire mesh
+These skills are essential for the Red Hat Certified Specialist in Building Resilient Microservices exam and for managing production microservices environments. The combination of Kubernetes health probes and service mesh capabilities ensures your applications can automatically recover from failures and maintain high availability.
+
+The techniques you've learned here form the foundation for building self-healing microservices that can detect problems, take corrective action, and maintain service quality without human intervention.Lab 18: Use Health Probes with OpenShift Service Mesh
+Objectives
+By the end of this lab, you will be able to:
+
+Configure Kubernetes readiness and liveness probes for microservices
+Integrate health probes with OpenShift Service Mesh components
+Monitor service health status through Istio service mesh
+Implement automated recovery actions based on probe failures
+Analyze service mesh traffic routing based on health probe results
+Troubleshoot common health probe configuration issues
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with OpenShift Service Mesh (Istio) fundamentals
+Knowledge of YAML configuration files
+Understanding of HTTP status codes and health check endpoints
+Experience with command-line interface operations
+Lab Environment
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift and Service Mesh already installed. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+OpenShift cluster with Service Mesh operator installed
+kubectl and oc CLI tools configured
+Sample microservices applications
+Monitoring and observability tools
+Task 1: Set up Kubernetes Readiness and Liveness Probes
+Subtask 1.1: Create a Sample Application with Health Endpoints
+First, we'll deploy a sample application that includes health check endpoints.
+
+Create a new project namespace for our lab:
+oc new-project health-probe-lab
+Create a sample application with health endpoints. Save the following as sample-app.yaml:
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-demo-app
+  namespace: health-probe-lab
+  labels:
+    app: health-demo
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: health-demo
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: health-demo
+        version: v1
+    spec:
+      containers:
+      - name: health-demo
+        image: quay.io/redhattraining/health-probe-demo:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: STARTUP_DELAY
+          value: "10"
+        - name: READINESS_DELAY
+          value: "5"
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: health-demo-service
+  namespace: health-probe-lab
+  labels:
+    app: health-demo
+spec:
+  selector:
+    app: health-demo
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+Deploy the application:
+oc apply -f sample-app.yaml
+Verify the deployment:
+oc get pods -n health-probe-lab
+oc get svc -n health-probe-lab
+Subtask 1.2: Configure Liveness Probes
+Liveness probes determine if a container is running properly. If a liveness probe fails, Kubernetes will restart the container.
+
+Create an updated deployment with liveness probes. Save as app-with-liveness.yaml:
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-demo-app
+  namespace: health-probe-lab
+  labels:
+    app: health-demo
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: health-demo
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: health-demo
+        version: v1
+    spec:
+      containers:
+      - name: health-demo
+        image: quay.io/redhattraining/health-probe-demo:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: STARTUP_DELAY
+          value: "10"
+        - name: READINESS_DELAY
+          value: "5"
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+Apply the updated configuration:
+oc apply -f app-with-liveness.yaml
+Monitor the pod status and events:
+oc describe pods -l app=health-demo -n health-probe-lab
+Subtask 1.3: Configure Readiness Probes
+Readiness probes determine if a container is ready to receive traffic. Failed readiness probes remove the pod from service endpoints.
+
+Create a deployment with both liveness and readiness probes. Save as app-with-probes.yaml:
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: health-demo-app
+  namespace: health-probe-lab
+  labels:
+    app: health-demo
+    version: v1
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: health-demo
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: health-demo
+        version: v1
+    spec:
+      containers:
+      - name: health-demo
+        image: quay.io/redhattraining/health-probe-demo:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: STARTUP_DELAY
+          value: "10"
+        - name: READINESS_DELAY
+          value: "5"
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          successThreshold: 1
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+          successThreshold: 1
+        startupProbe:
+          httpGet:
+            path: /health/startup
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 5
+          periodSeconds: 2
+          timeoutSeconds: 3
+          failureThreshold: 15
+          successThreshold: 1
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+Apply the complete probe configuration:
+oc apply -f app-with-probes.yaml
+Verify probe configuration:
+oc describe deployment health-demo-app -n health-probe-lab
+Task 2: Integrate Probes with OpenShift Service Mesh
+Subtask 2.1: Enable Service Mesh for the Namespace
+First, verify that the Service Mesh Control Plane is installed:
+oc get smcp -n istio-system
+Create a ServiceMeshMemberRoll to include our namespace. Save as member-roll.yaml:
+apiVersion: maistra.io/v1
+kind: ServiceMeshMemberRoll
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  members:
+  - health-probe-lab
+Apply the member roll configuration:
+oc apply -f member-roll.yaml
+Verify the namespace is part of the service mesh:
+oc get smmr -n istio-system -o yaml
+Subtask 2.2: Configure Istio Sidecar Injection
+Enable automatic sidecar injection for the namespace:
+oc label namespace health-probe-lab istio-injection=enabled
+Restart the deployment to inject sidecars:
+oc rollout restart deployment/health-demo-app -n health-probe-lab
+Verify sidecar injection:
+oc get pods -n health-probe-lab
+You should see 2/2 containers running (application + Istio proxy).
+
+Check the sidecar configuration:
+oc describe pod -l app=health-demo -n health-probe-lab
+Subtask 2.3: Create Istio Virtual Service and Destination Rule
+Create a Virtual Service to manage traffic routing. Save as virtual-service.yaml:
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: health-demo-vs
+  namespace: health-probe-lab
+spec:
+  hosts:
+  - health-demo-service
+  http:
+  - match:
+    - headers:
+        end-user:
+          exact: test
+    route:
+    - destination:
+        host: health-demo-service
+        subset: v1
+      weight: 100
+  - route:
+    - destination:
+        host: health-demo-service
+        subset: v1
+      weight: 100
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: health-demo-dr
+  namespace: health-probe-lab
+spec:
+  host: health-demo-service
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  trafficPolicy:
+    outlierDetection:
+      consecutiveErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    healthCheck:
+      path: /health/ready
+      intervalSeconds: 10
+      timeoutSeconds: 3
+      unhealthyThreshold: 3
+      healthyThreshold: 2
+Apply the Istio configuration:
+oc apply -f virtual-service.yaml
+Verify the configuration:
+oc get virtualservice,destinationrule -n health-probe-lab
+Subtask 2.4: Configure Service Mesh Gateway
+Create a Gateway to expose the service. Save as gateway.yaml:
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: health-demo-gateway
+  namespace: health-probe-lab
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - health-demo.apps.cluster.local
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: health-demo-gateway-vs
+  namespace: health-probe-lab
+spec:
+  hosts:
+  - health-demo.apps.cluster.local
+  gateways:
+  - health-demo-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: health-demo-service
+        port:
+          number: 8080
+Apply the gateway configuration:
+oc apply -f gateway.yaml
+Get the ingress gateway URL:
+export INGRESS_HOST=$(oc get route istio-ingressgateway -n istio-system -o jsonpath='{.spec.host}')
+echo "Gateway URL: http://$INGRESS_HOST"
+Task 3: Monitor Service Health and Recovery Actions
+Subtask 3.1: Set Up Health Monitoring
+Create a script to monitor pod health status. Save as monitor-health.sh:
+#!/bin/bash
+
+echo "=== Health Probe Monitoring Script ==="
+echo "Monitoring pods in health-probe-lab namespace..."
+echo
+
+while true; do
+    echo "$(date): Checking pod status..."
+    
+    # Get pod status
+    oc get pods -n health-probe-lab -o custom-columns=NAME:.metadata.name,STATUS:.status.phase,READY:.status.containerStatuses[*].ready,RESTARTS:.status.containerStatuses[*].restartCount
+    
+    echo
+    echo "Checking service endpoints..."
+    oc get endpoints health-demo-service -n health-probe-lab -o yaml | grep -A 10 addresses
+    
+    echo "----------------------------------------"
+    sleep 10
+done
+Make the script executable and run it in a separate terminal:
+chmod +x monitor-health.sh
+./monitor-health.sh
+Subtask 3.2: Test Liveness Probe Failure
+Create a script to simulate liveness probe failure. Save as test-liveness.sh:
+#!/bin/bash
+
+# Get a pod name
+POD_NAME=$(oc get pods -n health-probe-lab -l app=health-demo -o jsonpath='{.items[0].metadata.name}')
+
+echo "Testing liveness probe failure on pod: $POD_NAME"
+
+# Simulate liveness probe failure
+oc exec -n health-probe-lab $POD_NAME -c health-demo -- curl -X POST http://localhost:8080/health/live/disable
+
+echo "Liveness probe disabled. Monitor the pod for restart..."
+echo "Pod will be restarted by Kubernetes when liveness probe fails."
+
+# Monitor pod events
+oc get events -n health-probe-lab --field-selector involvedObject.name=$POD_NAME --sort-by='.lastTimestamp'
+Run the liveness test:
+chmod +x test-liveness.sh
+./test-liveness.sh
+Watch the pod restart:
+oc get pods -n health-probe-lab -w
+Subtask 3.3: Test Readiness Probe Failure
+Create a script to test readiness probe failure. Save as test-readiness.sh:
+#!/bin/bash
+
+# Get a pod name
+POD_NAME=$(oc get pods -n health-probe-lab -l app=health-demo -o jsonpath='{.items[0].metadata.name}')
+
+echo "Testing readiness probe failure on pod: $POD_NAME"
+
+# Check current endpoints
+echo "Current service endpoints:"
+oc get endpoints health-demo-service -n health-probe-lab
+
+# Simulate readiness probe failure
+oc exec -n health-probe-lab $POD_NAME -c health-demo -- curl -X POST http://localhost:8080/health/ready/disable
+
+echo "Readiness probe disabled. Pod should be removed from service endpoints..."
+
+# Wait and check endpoints again
+sleep 15
+echo "Service endpoints after readiness failure:"
+oc get endpoints health-demo-service -n health-probe-lab
+
+# Re-enable readiness
+echo "Re-enabling readiness probe..."
+oc exec -n health-probe-lab $POD_NAME -c health-demo -- curl -X POST http://localhost:8080/health/ready/enable
+
+sleep 10
+echo "Service endpoints after readiness recovery:"
+oc get endpoints health-demo-service -n health-probe-lab
+Run the readiness test:
+chmod +x test-readiness.sh
+./test-readiness.sh
+Subtask 3.4: Monitor Service Mesh Health Integration
+Check Istio proxy health status:
+# Check Envoy admin interface
+POD_NAME=$(oc get pods -n health-probe-lab -l app=health-demo -o jsonpath='{.items[0].metadata.name}')
+
+oc exec -n health-probe-lab $POD_NAME -c istio-proxy -- curl -s localhost:15000/clusters | grep health-demo
+View Istio configuration for health checks:
+# Check Envoy configuration
+oc exec -n health-probe-lab $POD_NAME -c istio-proxy -- curl -s localhost:15000/config_dump | grep -A 20 -B 5 health_check
+Monitor traffic through Kiali (if available):
+# Get Kiali route
+oc get route kiali -n istio-system
+
+# Access Kiali dashboard to view service health
+echo "Access Kiali dashboard to monitor service mesh health"
+Subtask 3.5: Test Automated Recovery Actions
+Create a comprehensive test script. Save as test-recovery.sh:
+#!/bin/bash
+
+echo "=== Testing Automated Recovery Actions ==="
+
+# Function to check pod health
+check_pod_health() {
+    echo "Current pod status:"
+    oc get pods -n health-probe-lab -l app=health-demo
+    echo
+}
+
+# Function to check service endpoints
+check_endpoints() {
+    echo "Service endpoints:"
+    oc get endpoints health-demo-service -n health-probe-lab -o jsonpath='{.subsets[*].addresses[*].ip}' | wc -w
+    echo
+}
+
+# Test 1: Liveness probe failure and recovery
+echo "Test 1: Liveness Probe Failure and Recovery"
+echo "============================================"
+
+POD_NAME=$(oc get pods -n health-probe-lab -l app=health-demo -o jsonpath='{.items[0].metadata.name}')
+echo "Target pod: $POD_NAME"
+
+check_pod_health
+INITIAL_RESTART_COUNT=$(oc get pod $POD_NAME -n health-probe-lab -o jsonpath='{.status.containerStatuses[0].restartCount}')
+echo "Initial restart count: $INITIAL_RESTART_COUNT"
+
+# Disable liveness probe
+echo "Disabling liveness probe..."
+oc exec -n health-probe-lab $POD_NAME -c health-demo -- curl -X POST http://localhost:8080/health/live/disable
+
+# Wait for restart
+echo "Waiting for pod restart..."
+sleep 60
+
+check_pod_health
+NEW_RESTART_COUNT=$(oc get pod $POD_NAME -n health-probe-lab -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || echo "0")
+echo "New restart count: $NEW_RESTART_COUNT"
+
+if [ "$NEW_RESTART_COUNT" -gt "$INITIAL_RESTART_COUNT" ]; then
+    echo "✓ Liveness probe failure triggered pod restart successfully"
+else
+    echo "✗ Pod restart not detected"
+fi
+
+echo
+echo "Test 2: Readiness Probe Failure and Traffic Removal"
+echo "=================================================="
+
+# Get fresh pod name after potential restart
+POD_NAME=$(oc get pods -n health-probe-lab -l app=health-demo -o jsonpath='{.items[0].metadata.name}')
+
+INITIAL_ENDPOINTS=$(oc get endpoints health-demo-service -n health-probe-lab -o jsonpath='{.subsets[*].addresses[*].ip}' | wc -w)
+echo "Initial endpoint count: $INITIAL_ENDPOINTS"
+
+# Disable readiness probe
+echo "Disabling readiness probe..."
+oc exec -n health-probe-lab $POD_NAME -c health-demo -- curl -X POST http://localhost:8080/health/ready/disable
+
+sleep 20
+NEW_ENDPOINTS=$(oc get endpoints health-demo-service -n health-probe-lab -o jsonpath='{.subsets[*].addresses[*].ip}' | wc -w)
+echo "Endpoint count after readiness failure: $NEW_ENDPOINTS"
+
+if [ "$NEW_ENDPOINTS" -lt "$INITIAL_ENDPOINTS" ]; then
+    echo "✓ Readiness probe failure removed pod from service endpoints"
+else
+    echo "✗ Pod was not removed from service endpoints"
+fi
+
+# Re-enable readiness probe
+echo "Re-enabling readiness probe..."
+oc exec -n health-probe-lab $POD_NAME -c health-demo -- curl -X POST http://localhost:8080/health/ready/enable
+
+sleep 15
+FINAL_ENDPOINTS=$(oc get endpoints health-demo-service -n health-probe-lab -o jsonpath='{.subsets[*].addresses[*].ip}' | wc -w)
+echo "Final endpoint count: $FINAL_ENDPOINTS"
+
+if [ "$FINAL_ENDPOINTS" -eq "$INITIAL_ENDPOINTS" ]; then
+    echo "✓ Pod successfully re-added to service endpoints"
+else
+    echo "✗ Pod was not re-added to service endpoints"
+fi
+
+echo
+echo "=== Recovery Test Complete ==="
+Run the comprehensive recovery test:
+chmod +x test-recovery.sh
+./test-recovery.sh
+Subtask 3.6: Configure Advanced Health Check Scenarios
+Create a deployment with custom health check logic. Save as advanced-health-app.yaml:
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: advanced-health-demo
+  namespace: health-probe-lab
+  labels:
+    app: advanced-health-demo
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: advanced-health-demo
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: advanced-health-demo
+        version: v1
+    spec:
+      containers:
+      - name: advanced-health-demo
+        image: quay.io/redhattraining/health-probe-demo:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: HEALTH_CHECK_DELAY
+          value: "2"
+        - name: FAILURE_RATE
+          value: "0.1"
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+            httpHeaders:
+            - name: Custom-Header
+              value: liveness-check
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 2
+          successThreshold: 1
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+            httpHeaders:
+            - name: Custom-Header
+              value: readiness-check
+          initialDelaySeconds: 5
+          periodSeconds: 3
+          timeoutSeconds: 2
+          failureThreshold: 2
+          successThreshold: 1
+        startupProbe:
+          httpGet:
+            path: /health/startup
+            port: 8080
+          initialDelaySeconds: 0
+          periodSeconds: 1
+          timeoutSeconds: 1
+          failureThreshold: 30
+          successThreshold: 1
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: advanced-health-demo-service
+  namespace: health-probe-lab
+  labels:
+    app: advanced-health-demo
+spec:
+  selector:
+    app: advanced-health-demo
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http
+Deploy the advanced health application:
+oc apply -f advanced-health-app.yaml
+Monitor the advanced health checks:
+oc get pods -l app=advanced-health-demo -n health-probe-lab -w
+Troubleshooting Common Issues
+Issue 1: Probes Failing Due to Slow Application Startup
+Symptoms: Pods continuously restart during startup
+
+Solution:
+
+# Increase initialDelaySeconds and use startup probes
+# Update deployment with longer delays
+oc patch deployment health-demo-app -n health-probe-lab -p '{"spec":{"template":{"spec":{"containers":[{"name":"health-demo","livenessProbe":{"initialDelaySeconds":30}}]}}}}'
+Issue 2: Service Mesh Sidecar Interfering with Health Checks
+Symptoms: Health checks work without service mesh but fail with sidecars
+
+Solution:
+
+# Check if probes are hitting the sidecar instead of the application
+oc logs -n health-probe-lab -l app=health-demo -c istio-proxy
+
+# Ensure probes target the correct port
+oc describe pod -l app=health-demo -n health-probe-lab
+Issue 3: Readiness Probe Not Removing Pod from Endpoints
+Symptoms: Failed readiness probes don't remove pod from service
+
+Solution:
+
+# Check service selector matches pod labels
+oc get service health-demo-service -n health-probe-lab -o yaml
+oc get pods -l app=health-demo -n health-probe-lab --show-labels
+
+# Verify endpoint controller is working
+oc get events -n health-probe-lab | grep endpoints
+Conclusion
+In this lab, you have successfully:
+
+Configured comprehensive health probes including liveness, readiness, and startup probes for microservices running in OpenShift
+Integrated health probes with OpenShift Service Mesh by enabling sidecar injection and configuring Istio traffic management policies
+Monitored service health and recovery actions by observing how Kubernetes automatically restarts failed containers and removes unhealthy pods from service endpoints
+Tested automated recovery scenarios to validate that the service mesh properly handles health probe failures and traffic routing
+Implemented advanced health check configurations with custom headers and failure thresholds
+Why This Matters: Health probes are critical for building resilient microservices architectures. When integrated with service mesh technology, they provide:
+
+Automated failure detection and recovery without manual intervention
+Intelligent traffic routing that avoids sending requests to unhealthy services
+Improved application availability through proactive health monitoring
+Better observability into service health status across the entire mesh
+These skills are essential for the Red Hat Certified Specialist in Building Resilient Microservices exam and for managing production microservices environments. The combination of Kubernetes health probes and service mesh capabilities ensures your applications can automatically recover from failures and maintain high availability.
+
+The techniques you've learned here form the foundation for building self-healing microservices that can detect problems, take corrective action, and maintain service quality without human intervention.

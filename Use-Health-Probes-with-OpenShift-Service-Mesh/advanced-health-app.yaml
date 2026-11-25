@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: advanced-health-demo
+  namespace: health-probe-lab
+  labels:
+    app: advanced-health-demo
+    version: v1
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: advanced-health-demo
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: advanced-health-demo
+        version: v1
+    spec:
+      containers:
+      - name: advanced-health-demo
+        image: quay.io/redhattraining/health-probe-demo:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: HEALTH_CHECK_DELAY
+          value: "2"
+        - name: FAILURE_RATE
+          value: "0.1"
+        livenessProbe:
+          httpGet:
+            path: /health/live
+            port: 8080
+            httpHeaders:
+            - name: Custom-Header
+              value: liveness-check
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 2
+          failureThreshold: 2
+          successThreshold: 1
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+            httpHeaders:
+            - name: Custom-Header
+              value: readiness-check
+          initialDelaySeconds: 5
+          periodSeconds: 3
+          timeoutSeconds: 2
+          failureThreshold: 2
+          successThreshold: 1
+        startupProbe:
+          httpGet:
+            path: /health/startup
+            port: 8080
+          initialDelaySeconds: 0
+          periodSeconds: 1
+          timeoutSeconds: 1
+          failureThreshold: 30
+          successThreshold: 1
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: advanced-health-demo-service
+  namespace: health-probe-lab
+  labels:
+    app: advanced-health-demo
+spec:
+  selector:
+    app: advanced-health-demo
+  ports:
+  - port: 8080
+    targetPort: 8080
+    name: http

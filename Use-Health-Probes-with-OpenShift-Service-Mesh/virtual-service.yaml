@@ -1,0 +1,47 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: health-demo-vs
+  namespace: health-probe-lab
+spec:
+  hosts:
+  - health-demo-service
+  http:
+  - match:
+    - headers:
+        end-user:
+          exact: test
+    route:
+    - destination:
+        host: health-demo-service
+        subset: v1
+      weight: 100
+  - route:
+    - destination:
+        host: health-demo-service
+        subset: v1
+      weight: 100
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: health-demo-dr
+  namespace: health-probe-lab
+spec:
+  host: health-demo-service
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  trafficPolicy:
+    outlierDetection:
+      consecutiveErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    healthCheck:
+      path: /health/ready
+      intervalSeconds: 10
+      timeoutSeconds: 3
+      unhealthyThreshold: 3
+      healthyThreshold: 2
