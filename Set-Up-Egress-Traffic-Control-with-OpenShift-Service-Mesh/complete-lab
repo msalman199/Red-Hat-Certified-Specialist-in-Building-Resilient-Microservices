@@ -1,0 +1,554 @@
+Lab 14: Set Up Egress Traffic Control with OpenShift Service Mesh
+Objectives
+By the end of this lab, you will be able to:
+
+Configure and deploy an egress gateway in OpenShift Service Mesh
+Implement policies for controlling outbound traffic from the mesh
+Set up monitoring and observability for external service communications
+Test and validate external service connectivity through the mesh
+Troubleshoot common egress traffic control issues
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with OpenShift Service Mesh (Istio) fundamentals
+Knowledge of YAML configuration files
+Understanding of networking concepts (DNS, HTTP/HTTPS, ports)
+Experience with command-line interface operations
+Completion of previous OpenShift Service Mesh labs or equivalent knowledge
+Ready-to-Use Cloud Machines
+Al Nafi provides pre-configured Linux-based cloud machines with all necessary tools installed. Simply click Start Lab to access your environment. No need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+OpenShift cluster with Service Mesh installed
+kubectl and oc CLI tools configured
+Sample applications ready for deployment
+All required permissions and access configured
+Lab Environment Setup
+Verify Your Environment
+First, let's verify that your OpenShift Service Mesh environment is ready:
+
+# Check if you're connected to the OpenShift cluster
+oc whoami
+
+# Verify Service Mesh installation
+oc get pods -n istio-system
+
+# Check available namespaces
+oc get namespaces
+Create Lab Namespace
+# Create a dedicated namespace for this lab
+oc new-project egress-lab
+
+# Label the namespace for Service Mesh injection
+oc label namespace egress-lab istio-injection=enabled
+
+# Verify the label
+oc get namespace egress-lab --show-labels
+Task 1: Configure Egress Gateway
+Subtask 1.1: Deploy Sample Application
+First, we'll deploy a sample application that will make external requests:
+
+# Create a sample application deployment
+cat << 'EOF' > sample-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sample-app
+  namespace: egress-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sample-app
+  template:
+    metadata:
+      labels:
+        app: sample-app
+    spec:
+      containers:
+      - name: sample-app
+        image: curlimages/curl:latest
+        command: ["/bin/sh"]
+        args: ["-c", "while true; do sleep 3600; done"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sample-app
+  namespace: egress-lab
+spec:
+  selector:
+    app: sample-app
+  ports:
+  - port: 80
+    targetPort: 80
+EOF
+
+# Apply the deployment
+oc apply -f sample-app.yaml
+
+# Wait for the pod to be ready
+oc wait --for=condition=ready pod -l app=sample-app -n egress-lab --timeout=300s
+Subtask 1.2: Test Default Egress Behavior
+Let's test the current egress behavior before implementing controls:
+
+# Get the pod name
+POD_NAME=$(oc get pods -n egress-lab -l app=sample-app -o jsonpath='{.items[0].metadata.name}')
+
+# Test external connectivity (this should work by default)
+oc exec -n egress-lab $POD_NAME -- curl -s -o /dev/null -w "%{http_code}" http://httpbin.org/get
+
+# Test HTTPS connectivity
+oc exec -n egress-lab $POD_NAME -- curl -s -o /dev/null -w "%{http_code}" https://httpbin.org/get
+Subtask 1.3: Create ServiceEntry for External Service
+Now we'll create a ServiceEntry to register an external service:
+
+# Create ServiceEntry for httpbin.org
+cat << 'EOF' > httpbin-serviceentry.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: ServiceEntry
+metadata:
+  name: httpbin-ext
+  namespace: egress-lab
+spec:
+  hosts:
+  - httpbin.org
+  ports:
+  - number: 80
+    name: http
+    protocol: HTTP
+  - number: 443
+    name: https
+    protocol: HTTPS
+  location: MESH_EXTERNAL
+  resolution: DNS
+EOF
+
+# Apply the ServiceEntry
+oc apply -f httpbin-serviceentry.yaml
+
+# Verify the ServiceEntry
+oc get serviceentry -n egress-lab
+Subtask 1.4: Configure Egress Gateway
+Create and configure the egress gateway:
+
+# Create Gateway configuration for egress
+cat << 'EOF' > egress-gateway.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: istio-egressgateway
+  namespace: egress-lab
+spec:
+  selector:
+    istio: egressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - httpbin.org
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    hosts:
+    - httpbin.org
+    tls:
+      mode: PASSTHROUGH
+EOF
+
+# Apply the Gateway configuration
+oc apply -f egress-gateway.yaml
+
+# Verify the Gateway
+oc get gateway -n egress-lab
+Subtask 1.5: Create VirtualService for Egress Traffic
+Configure routing through the egress gateway:
+
+# Create VirtualService for egress routing
+cat << 'EOF' > egress-virtualservice.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: direct-httpbin-through-egress-gateway
+  namespace: egress-lab
+spec:
+  hosts:
+  - httpbin.org
+  gateways:
+  - istio-egressgateway
+  - mesh
+  http:
+  - match:
+    - gateways:
+      - mesh
+      port: 80
+    route:
+    - destination:
+        host: istio-egressgateway.istio-system.svc.cluster.local
+        port:
+          number: 80
+      weight: 100
+  - match:
+    - gateways:
+      - istio-egressgateway
+      port: 80
+    route:
+    - destination:
+        host: httpbin.org
+        port:
+          number: 80
+      weight: 100
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: direct-httpbin-through-egress-gateway-tls
+  namespace: egress-lab
+spec:
+  hosts:
+  - httpbin.org
+  gateways:
+  - istio-egressgateway
+  - mesh
+  tls:
+  - match:
+    - gateways:
+      - mesh
+      port: 443
+      sniHosts:
+      - httpbin.org
+    route:
+    - destination:
+        host: istio-egressgateway.istio-system.svc.cluster.local
+        port:
+          number: 443
+  - match:
+    - gateways:
+      - istio-egressgateway
+      port: 443
+      sniHosts:
+      - httpbin.org
+    route:
+    - destination:
+        host: httpbin.org
+        port:
+          number: 443
+EOF
+
+# Apply the VirtualService
+oc apply -f egress-virtualservice.yaml
+
+# Verify the VirtualService
+oc get virtualservice -n egress-lab
+Task 2: Set Up Policies for Outbound Traffic Management
+Subtask 2.1: Create DestinationRule for External Service
+Configure destination rules for traffic policies:
+
+# Create DestinationRule for httpbin.org
+cat << 'EOF' > httpbin-destinationrule.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: httpbin-ext
+  namespace: egress-lab
+spec:
+  host: httpbin.org
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 10
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 2
+    circuitBreaker:
+      consecutiveErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+EOF
+
+# Apply the DestinationRule
+oc apply -f httpbin-destinationrule.yaml
+
+# Verify the DestinationRule
+oc get destinationrule -n egress-lab
+Subtask 2.2: Implement Egress Network Policy
+Create network policies to control egress traffic:
+
+# Create Istio AuthorizationPolicy for egress control
+cat << 'EOF' > egress-authz-policy.yaml
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-egress-httpbin
+  namespace: egress-lab
+spec:
+  selector:
+    matchLabels:
+      app: sample-app
+  action: ALLOW
+  rules:
+  - to:
+    - operation:
+        hosts: ["httpbin.org"]
+        methods: ["GET", "POST"]
+EOF
+
+# Apply the AuthorizationPolicy
+oc apply -f egress-authz-policy.yaml
+
+# Verify the policy
+oc get authorizationpolicy -n egress-lab
+Subtask 2.3: Configure Sidecar for Egress Control
+Create a Sidecar configuration to control egress traffic:
+
+# Create Sidecar configuration
+cat << 'EOF' > egress-sidecar.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: Sidecar
+metadata:
+  name: default
+  namespace: egress-lab
+spec:
+  egress:
+  - hosts:
+    - "./*"
+    - "istio-system/*"
+    - "./httpbin.org"
+EOF
+
+# Apply the Sidecar configuration
+oc apply -f egress-sidecar.yaml
+
+# Verify the Sidecar
+oc get sidecar -n egress-lab
+Subtask 2.4: Create Rate Limiting Policy
+Implement rate limiting for external services:
+
+# Create EnvoyFilter for rate limiting
+cat << 'EOF' > rate-limit-filter.yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: httpbin-ratelimit
+  namespace: egress-lab
+spec:
+  workloadSelector:
+    labels:
+      app: sample-app
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          value:
+            stat_prefix: httpbin_rate_limiter
+            token_bucket:
+              max_tokens: 10
+              tokens_per_fill: 10
+              fill_interval: 60s
+            filter_enabled:
+              runtime_key: local_rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            filter_enforced:
+              runtime_key: local_rate_limit_enforced
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+EOF
+
+# Apply the EnvoyFilter
+oc apply -f rate-limit-filter.yaml
+
+# Verify the EnvoyFilter
+oc get envoyfilter -n egress-lab
+Task 3: Test External Service Communication from the Mesh
+Subtask 3.1: Test Basic Connectivity
+Test the configured egress traffic routing:
+
+# Get the updated pod name
+POD_NAME=$(oc get pods -n egress-lab -l app=sample-app -o jsonpath='{.items[0].metadata.name}')
+
+# Test HTTP connectivity through egress gateway
+echo "Testing HTTP connectivity..."
+oc exec -n egress-lab $POD_NAME -- curl -s -o /dev/null -w "HTTP Status: %{http_code}, Time: %{time_total}s\n" http://httpbin.org/get
+
+# Test HTTPS connectivity
+echo "Testing HTTPS connectivity..."
+oc exec -n egress-lab $POD_NAME -- curl -s -o /dev/null -w "HTTP Status: %{http_code}, Time: %{time_total}s\n" https://httpbin.org/get
+
+# Test with headers to verify routing
+echo "Testing with custom headers..."
+oc exec -n egress-lab $POD_NAME -- curl -s -H "X-Test: egress-lab" http://httpbin.org/headers
+Subtask 3.2: Verify Traffic Routing Through Egress Gateway
+Check that traffic is actually going through the egress gateway:
+
+# Check egress gateway logs
+echo "Checking egress gateway logs..."
+oc logs -n istio-system -l istio=egressgateway --tail=20
+
+# Generate some traffic and check logs again
+echo "Generating test traffic..."
+for i in {1..5}; do
+  oc exec -n egress-lab $POD_NAME -- curl -s -o /dev/null http://httpbin.org/get
+  sleep 1
+done
+
+# Check logs again
+echo "Checking egress gateway logs after traffic..."
+oc logs -n istio-system -l istio=egressgateway --tail=10
+Subtask 3.3: Test Rate Limiting
+Verify that rate limiting is working:
+
+# Test rate limiting by making rapid requests
+echo "Testing rate limiting..."
+for i in {1..15}; do
+  echo "Request $i:"
+  oc exec -n egress-lab $POD_NAME -- curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" http://httpbin.org/get
+  sleep 1
+done
+Subtask 3.4: Test Blocked External Services
+Test that non-configured external services are blocked:
+
+# Try to access a service not in ServiceEntry
+echo "Testing blocked external service..."
+oc exec -n egress-lab $POD_NAME -- curl -s -o /dev/null -w "HTTP Status: %{http_code}\n" --connect-timeout 10 http://google.com
+
+# This should fail or timeout since google.com is not in our ServiceEntry
+Subtask 3.5: Monitor Egress Traffic with Kiali
+Access monitoring and observability:
+
+# Get Kiali route (if available)
+oc get route kiali -n istio-system
+
+# Generate traffic for monitoring
+echo "Generating traffic for monitoring..."
+for i in {1..10}; do
+  oc exec -n egress-lab $POD_NAME -- curl -s http://httpbin.org/get > /dev/null
+  oc exec -n egress-lab $POD_NAME -- curl -s https://httpbin.org/get > /dev/null
+  sleep 2
+done
+
+# Check service mesh metrics
+oc exec -n istio-system $(oc get pods -n istio-system -l app=prometheus -o jsonpath='{.items[0].metadata.name}') -- wget -qO- 'http://localhost:9090/api/v1/query?query=istio_requests_total{destination_service_name="httpbin.org"}' | grep -o '"value":\[[^]]*\]'
+Verification and Testing
+Verify All Components
+Let's verify that all components are working correctly:
+
+# Check all Istio resources in the namespace
+echo "=== ServiceEntries ==="
+oc get serviceentry -n egress-lab
+
+echo "=== Gateways ==="
+oc get gateway -n egress-lab
+
+echo "=== VirtualServices ==="
+oc get virtualservice -n egress-lab
+
+echo "=== DestinationRules ==="
+oc get destinationrule -n egress-lab
+
+echo "=== AuthorizationPolicies ==="
+oc get authorizationpolicy -n egress-lab
+
+echo "=== Sidecars ==="
+oc get sidecar -n egress-lab
+
+echo "=== EnvoyFilters ==="
+oc get envoyfilter -n egress-lab
+Test Different HTTP Methods
+# Test different HTTP methods
+echo "Testing GET request..."
+oc exec -n egress-lab $POD_NAME -- curl -s -X GET http://httpbin.org/get
+
+echo "Testing POST request..."
+oc exec -n egress-lab $POD_NAME -- curl -s -X POST -d '{"test": "data"}' -H "Content-Type: application/json" http://httpbin.org/post
+
+echo "Testing PUT request (should be blocked by AuthorizationPolicy)..."
+oc exec -n egress-lab $POD_NAME -- curl -s -X PUT -d '{"test": "data"}' -H "Content-Type: application/json" http://httpbin.org/put
+Troubleshooting Common Issues
+Issue 1: Traffic Not Going Through Egress Gateway
+If traffic is not routing through the egress gateway:
+
+# Check if egress gateway pods are running
+oc get pods -n istio-system -l istio=egressgateway
+
+# Verify gateway configuration
+oc describe gateway istio-egressgateway -n egress-lab
+
+# Check VirtualService configuration
+oc describe virtualservice -n egress-lab
+Issue 2: External Service Not Accessible
+If external services are not accessible:
+
+# Check ServiceEntry configuration
+oc describe serviceentry httpbin-ext -n egress-lab
+
+# Verify DNS resolution from pod
+oc exec -n egress-lab $POD_NAME -- nslookup httpbin.org
+
+# Check sidecar proxy configuration
+oc exec -n egress-lab $POD_NAME -c istio-proxy -- pilot-agent request GET config_dump | grep httpbin
+Issue 3: Rate Limiting Not Working
+If rate limiting is not functioning:
+
+# Check EnvoyFilter configuration
+oc describe envoyfilter httpbin-ratelimit -n egress-lab
+
+# Verify Envoy configuration in sidecar
+oc exec -n egress-lab $POD_NAME -c istio-proxy -- pilot-agent request GET config_dump | grep -A 20 local_ratelimit
+Cleanup
+To clean up the lab resources:
+
+# Delete all created resources
+oc delete -f egress-virtualservice.yaml
+oc delete -f egress-gateway.yaml
+oc delete -f httpbin-serviceentry.yaml
+oc delete -f httpbin-destinationrule.yaml
+oc delete -f egress-authz-policy.yaml
+oc delete -f egress-sidecar.yaml
+oc delete -f rate-limit-filter.yaml
+oc delete -f sample-app.yaml
+
+# Delete the namespace
+oc delete project egress-lab
+
+# Verify cleanup
+oc get namespaces | grep egress-lab
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Configured Egress Gateway: You set up an egress gateway to control and monitor outbound traffic from your service mesh to external services. This provides a centralized point for managing external communications.
+
+Implemented Traffic Policies: You created various policies including ServiceEntry for service registration, DestinationRule for traffic management, AuthorizationPolicy for access control, and rate limiting through EnvoyFilter.
+
+Tested External Connectivity: You verified that applications within the mesh can communicate with external services through the configured egress gateway while respecting the defined policies and restrictions.
+
+Monitored Traffic Flow: You learned how to monitor and observe egress traffic using logs and metrics, ensuring visibility into external service communications.
+
+Applied Security Controls: You implemented authorization policies and rate limiting to secure and control external service access, preventing unauthorized or excessive external communications.
+
+This egress traffic control setup is crucial for production environments where you need to:
+
+Monitor and audit external service communications
+Implement security policies for outbound traffic
+Control bandwidth and rate limiting for external services
+Ensure compliance with organizational security requirements
+Provide centralized logging and monitoring for external communications
+The skills you've developed in this lab are essential for the Red Hat Certified Specialist in Building Resilient Microservices exam and for managing production service mesh deployments where external service integration is required.

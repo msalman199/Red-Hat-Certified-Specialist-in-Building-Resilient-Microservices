@@ -1,0 +1,15 @@
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-egress-httpbin
+  namespace: egress-lab
+spec:
+  selector:
+    matchLabels:
+      app: sample-app
+  action: ALLOW
+  rules:
+  - to:
+    - operation:
+        hosts: ["httpbin.org"]
+        methods: ["GET", "POST"]
