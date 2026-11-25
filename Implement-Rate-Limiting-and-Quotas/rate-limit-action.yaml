@@ -1,0 +1,20 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: filter-ratelimit-backend
+  namespace: rate-limiting-lab
+spec:
+  workloadSelector:
+    labels:
+      app: backend-service
+  configPatches:
+  - applyTo: VIRTUAL_HOST
+    match:
+      context: SIDECAR_INBOUND
+    patch:
+      operation: MERGE
+      value:
+        rate_limits:
+        - actions:
+          - generic_key:
+              descriptor_value: backend-service

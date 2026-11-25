@@ -1,0 +1,42 @@
+apiVersion: config.istio.io/v1alpha2
+kind: instance
+metadata:
+  name: requestcount
+  namespace: rate-limiting-lab
+spec:
+  compiledTemplate: quota
+  params:
+    dimensions:
+      source: source.labels["app"] | source.workload.name | "unknown"
+      sourceVersion: source.labels["version"] | "unknown"
+      destination: destination.labels["app"] | destination.workload.name | "unknown"
+      destinationVersion: destination.labels["version"] | "unknown"
+---
+apiVersion: config.istio.io/v1alpha2
+kind: handler
+metadata:
+  name: quotahandler
+  namespace: rate-limiting-lab
+spec:
+  compiledAdapter: memquota
+  params:
+    quotas:
+    - name: requestcount.instance.rate-limiting-lab
+      maxAmount: 50
+      validDuration: 60s
+      overrides:
+      - dimensions:
+          destination: backend-service
+        maxAmount: 10
+        validDuration: 60s
+---
+apiVersion: config.istio.io/v1alpha2
+kind: rule
+metadata:
+  name: quota
+  namespace: rate-limiting-lab
+spec:
+  actions:
+  - handler: quotahandler
+    instances:
+    - requestcount

@@ -1,0 +1,735 @@
+Lab 15: Implement Rate Limiting and Quotas
+Objectives
+By the end of this lab, you will be able to:
+
+Configure rate limiting policies for service endpoints in OpenShift Service Mesh
+Implement resource quotas to control service usage and prevent abuse
+Test rate limiting mechanisms and observe traffic flow behavior
+Monitor and analyze the effectiveness of rate limiting and quota policies
+Troubleshoot common rate limiting configuration issues
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with OpenShift Service Mesh (Istio) fundamentals
+Knowledge of YAML configuration files
+Experience with command-line interface operations
+Understanding of HTTP protocols and API concepts
+Completed previous Service Mesh labs or equivalent experience
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides Linux-based cloud machines with all necessary tools pre-installed. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+OpenShift cluster with Service Mesh installed
+Sample microservices applications
+Command-line tools (oc, kubectl, curl)
+Monitoring and observability tools
+Task 1: Set Rate Limits for Service Endpoints
+Subtask 1.1: Deploy Sample Applications
+First, let's deploy sample applications that we'll use to test rate limiting.
+
+Create a new project for the lab:
+oc new-project rate-limiting-lab
+oc label namespace rate-limiting-lab istio-injection=enabled
+Deploy a sample backend service:
+# Create backend-service.yaml
+cat << 'EOF' > backend-service.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend-service
+  namespace: rate-limiting-lab
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend-service
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: backend-service
+        version: v1
+    spec:
+      containers:
+      - name: backend
+        image: httpd:2.4
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: rate-limiting-lab
+spec:
+  selector:
+    app: backend-service
+  ports:
+  - port: 80
+    targetPort: 80
+    name: http
+EOF
+Apply the backend service configuration:
+oc apply -f backend-service.yaml
+Deploy a client application for testing:
+# Create client-app.yaml
+cat << 'EOF' > client-app.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: client-app
+  namespace: rate-limiting-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: client-app
+  template:
+    metadata:
+      labels:
+        app: client-app
+    spec:
+      containers:
+      - name: client
+        image: curlimages/curl:latest
+        command: ["/bin/sh"]
+        args: ["-c", "while true; do sleep 3600; done"]
+        resources:
+          requests:
+            memory: "32Mi"
+            cpu: "25m"
+          limits:
+            memory: "64Mi"
+            cpu: "50m"
+EOF
+Apply the client application:
+oc apply -f client-app.yaml
+Verify deployments are running:
+oc get pods -n rate-limiting-lab
+Subtask 1.2: Configure Basic Rate Limiting
+Now we'll implement rate limiting using Istio's EnvoyFilter and rate limiting service.
+
+Create a rate limiting configuration:
+# Create rate-limit-config.yaml
+cat << 'EOF' > rate-limit-config.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ratelimit-config
+  namespace: istio-system
+data:
+  config.yaml: |
+    domain: backend-service-ratelimit
+    descriptors:
+      - key: header_match
+        value: "backend-service"
+        rate_limit:
+          unit: minute
+          requests_per_unit: 10
+      - key: generic_key
+        value: "backend-service"
+        rate_limit:
+          unit: minute
+          requests_per_unit: 5
+EOF
+Apply the rate limit configuration:
+oc apply -f rate-limit-config.yaml
+Deploy the rate limiting service:
+# Create ratelimit-service.yaml
+cat << 'EOF' > ratelimit-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: istio-system
+  labels:
+    app: redis
+spec:
+  ports:
+  - name: redis
+    port: 6379
+  selector:
+    app: redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: istio-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+      - image: redis:alpine
+        imagePullPolicy: Always
+        name: redis
+        ports:
+        - name: redis
+          containerPort: 6379
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ratelimit
+  namespace: istio-system
+  labels:
+    app: ratelimit
+spec:
+  ports:
+  - name: http-port
+    port: 8080
+    targetPort: 8080
+    protocol: TCP
+  - name: grpc-port
+    port: 8081
+    targetPort: 8081
+    protocol: TCP
+  - name: http-debug
+    port: 6070
+    targetPort: 6070
+    protocol: TCP
+  selector:
+    app: ratelimit
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ratelimit
+  namespace: istio-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ratelimit
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: ratelimit
+    spec:
+      containers:
+      - image: envoyproxy/ratelimit:master
+        imagePullPolicy: Always
+        name: ratelimit
+        command: ["/bin/ratelimit"]
+        env:
+        - name: LOG_LEVEL
+          value: debug
+        - name: REDIS_SOCKET_TYPE
+          value: tcp
+        - name: REDIS_URL
+          value: redis:6379
+        - name: USE_STATSD
+          value: "false"
+        - name: RUNTIME_ROOT
+          value: /data
+        - name: RUNTIME_SUBDIRECTORY
+          value: ratelimit
+        ports:
+        - containerPort: 8080
+        - containerPort: 8081
+        - containerPort: 6070
+        volumeMounts:
+        - name: config-volume
+          mountPath: /data/ratelimit/config/config.yaml
+          subPath: config.yaml
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+      volumes:
+      - name: config-volume
+        configMap:
+          name: ratelimit-config
+EOF
+Deploy the rate limiting service:
+oc apply -f ratelimit-service.yaml
+Wait for services to be ready:
+oc get pods -n istio-system | grep -E "(redis|ratelimit)"
+Subtask 1.3: Configure EnvoyFilter for Rate Limiting
+Create an EnvoyFilter to enable rate limiting:
+# Create envoy-filter.yaml
+cat << 'EOF' > envoy-filter.yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: filter-ratelimit
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      app: istio-proxy
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: SIDECAR_INBOUND
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.ratelimit.v3.RateLimit
+          value:
+            domain: backend-service-ratelimit
+            rate_limit_service:
+              grpc_service:
+                envoy_grpc:
+                  cluster_name: rate_limit_cluster
+              transport_api_version: V3
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: filter-ratelimit-svc
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      app: istio-proxy
+  configPatches:
+  - applyTo: CLUSTER
+    match:
+      context: SIDECAR_INBOUND
+    patch:
+      operation: ADD
+      value:
+        name: rate_limit_cluster
+        type: STRICT_DNS
+        connect_timeout: 10s
+        lb_policy: ROUND_ROBIN
+        http2_protocol_options: {}
+        load_assignment:
+          cluster_name: rate_limit_cluster
+          endpoints:
+          - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: ratelimit.istio-system.svc.cluster.local
+                    port_value: 8081
+EOF
+Apply the EnvoyFilter configuration:
+oc apply -f envoy-filter.yaml
+Create a rate limiting action for the backend service:
+# Create rate-limit-action.yaml
+cat << 'EOF' > rate-limit-action.yaml
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata:
+  name: filter-ratelimit-backend
+  namespace: rate-limiting-lab
+spec:
+  workloadSelector:
+    labels:
+      app: backend-service
+  configPatches:
+  - applyTo: VIRTUAL_HOST
+    match:
+      context: SIDECAR_INBOUND
+    patch:
+      operation: MERGE
+      value:
+        rate_limits:
+        - actions:
+          - generic_key:
+              descriptor_value: backend-service
+EOF
+Apply the rate limiting action:
+oc apply -f rate-limit-action.yaml
+Task 2: Implement Quotas for Resource Usage
+Subtask 2.1: Configure Istio Mixer Quotas
+Create a quota specification:
+# Create quota-spec.yaml
+cat << 'EOF' > quota-spec.yaml
+apiVersion: config.istio.io/v1alpha2
+kind: QuotaSpec
+metadata:
+  name: request-count
+  namespace: rate-limiting-lab
+spec:
+  rules:
+  - quotas:
+    - charge: 1
+      quota: requestcount
+---
+apiVersion: config.istio.io/v1alpha2
+kind: QuotaSpecBinding
+metadata:
+  name: request-count
+  namespace: rate-limiting-lab
+spec:
+  quotaSpecs:
+  - name: request-count
+    namespace: rate-limiting-lab
+  services:
+  - name: backend-service
+    namespace: rate-limiting-lab
+EOF
+Create a quota instance and handler:
+# Create quota-instance.yaml
+cat << 'EOF' > quota-instance.yaml
+apiVersion: config.istio.io/v1alpha2
+kind: instance
+metadata:
+  name: requestcount
+  namespace: rate-limiting-lab
+spec:
+  compiledTemplate: quota
+  params:
+    dimensions:
+      source: source.labels["app"] | source.workload.name | "unknown"
+      sourceVersion: source.labels["version"] | "unknown"
+      destination: destination.labels["app"] | destination.workload.name | "unknown"
+      destinationVersion: destination.labels["version"] | "unknown"
+---
+apiVersion: config.istio.io/v1alpha2
+kind: handler
+metadata:
+  name: quotahandler
+  namespace: rate-limiting-lab
+spec:
+  compiledAdapter: memquota
+  params:
+    quotas:
+    - name: requestcount.instance.rate-limiting-lab
+      maxAmount: 50
+      validDuration: 60s
+      overrides:
+      - dimensions:
+          destination: backend-service
+        maxAmount: 10
+        validDuration: 60s
+---
+apiVersion: config.istio.io/v1alpha2
+kind: rule
+metadata:
+  name: quota
+  namespace: rate-limiting-lab
+spec:
+  actions:
+  - handler: quotahandler
+    instances:
+    - requestcount
+EOF
+Apply the quota configurations:
+oc apply -f quota-spec.yaml
+oc apply -f quota-instance.yaml
+Subtask 2.2: Implement Resource Quotas at Namespace Level
+Create a resource quota for the namespace:
+# Create resource-quota.yaml
+cat << 'EOF' > resource-quota.yaml
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: rate-limiting-quota
+  namespace: rate-limiting-lab
+spec:
+  hard:
+    requests.cpu: "2"
+    requests.memory: 4Gi
+    limits.cpu: "4"
+    limits.memory: 8Gi
+    pods: "10"
+    services: "5"
+    persistentvolumeclaims: "2"
+    count/deployments.apps: "5"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: rate-limiting-limits
+  namespace: rate-limiting-lab
+spec:
+  limits:
+  - default:
+      cpu: "200m"
+      memory: "256Mi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
+    type: Container
+  - max:
+      cpu: "1"
+      memory: "1Gi"
+    min:
+      cpu: "50m"
+      memory: "64Mi"
+    type: Container
+EOF
+Apply the resource quota:
+oc apply -f resource-quota.yaml
+Verify the quota is active:
+oc describe quota rate-limiting-quota -n rate-limiting-lab
+oc describe limitrange rate-limiting-limits -n rate-limiting-lab
+Subtask 2.3: Configure Network Policies for Traffic Control
+Create a network policy to control traffic flow:
+# Create network-policy.yaml
+cat << 'EOF' > network-policy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: backend-service-policy
+  namespace: rate-limiting-lab
+spec:
+  podSelector:
+    matchLabels:
+      app: backend-service
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: client-app
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    ports:
+    - protocol: TCP
+      port: 80
+  egress:
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 53
+    - protocol: UDP
+      port: 53
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+EOF
+Apply the network policy:
+oc apply -f network-policy.yaml
+Task 3: Test Rate Limiting and Observe Traffic Flow
+Subtask 3.1: Basic Rate Limiting Tests
+Get the client pod name:
+CLIENT_POD=$(oc get pod -l app=client-app -n rate-limiting-lab -o jsonpath='{.items[0].metadata.name}')
+echo "Client pod: $CLIENT_POD"
+Test normal traffic flow:
+# Test a few requests to ensure connectivity
+for i in {1..3}; do
+  oc exec $CLIENT_POD -n rate-limiting-lab -- curl -s -o /dev/null -w "Request $i: %{http_code} - Time: %{time_total}s\n" http://backend-service.rate-limiting-lab.svc.cluster.local
+  sleep 1
+done
+Test rate limiting by sending rapid requests:
+# Send requests rapidly to trigger rate limiting
+echo "Testing rate limiting with rapid requests..."
+for i in {1..15}; do
+  oc exec $CLIENT_POD -n rate-limiting-lab -- curl -s -o /dev/null -w "Request $i: %{http_code} - Time: %{time_total}s\n" http://backend-service.rate-limiting-lab.svc.cluster.local &
+done
+wait
+Subtask 3.2: Load Testing and Monitoring
+Create a load testing script:
+# Create load-test.sh
+cat << 'EOF' > load-test.sh
+#!/bin/bash
+
+CLIENT_POD=$(oc get pod -l app=client-app -n rate-limiting-lab -o jsonpath='{.items[0].metadata.name}')
+BACKEND_URL="http://backend-service.rate-limiting-lab.svc.cluster.local"
+
+echo "Starting load test..."
+echo "Timestamp,Request_Number,HTTP_Code,Response_Time"
+
+for i in {1..30}; do
+  TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+  RESULT=$(oc exec $CLIENT_POD -n rate-limiting-lab -- curl -s -o /dev/null -w "%{http_code},%{time_total}" $BACKEND_URL)
+  echo "$TIMESTAMP,$i,$RESULT"
+  sleep 2
+done
+EOF
+
+chmod +x load-test.sh
+Run the load test:
+./load-test.sh | tee load-test-results.csv
+Monitor rate limiting service logs:
+# In a separate terminal, monitor rate limiting logs
+oc logs -f deployment/ratelimit -n istio-system
+Subtask 3.3: Advanced Testing Scenarios
+Test quota exhaustion:
+# Create a script to test quota limits
+cat << 'EOF' > quota-test.sh
+#!/bin/bash
+
+CLIENT_POD=$(oc get pod -l app=client-app -n rate-limiting-lab -o jsonpath='{.items[0].metadata.name}')
+BACKEND_URL="http://backend-service.rate-limiting-lab.svc.cluster.local"
+
+echo "Testing quota exhaustion..."
+for i in {1..60}; do
+  RESULT=$(oc exec $CLIENT_POD -n rate-limiting-lab -- curl -s -o /dev/null -w "%{http_code}" $BACKEND_URL 2>/dev/null)
+  echo "Request $i: HTTP $RESULT"
+  
+  if [ "$RESULT" != "200" ]; then
+    echo "Quota limit reached at request $i"
+    break
+  fi
+  sleep 1
+done
+EOF
+
+chmod +x quota-test.sh
+./quota-test.sh
+Test recovery after rate limit period:
+echo "Waiting for rate limit window to reset..."
+sleep 65
+
+echo "Testing recovery..."
+for i in {1..5}; do
+  oc exec $CLIENT_POD -n rate-limiting-lab -- curl -s -o /dev/null -w "Recovery test $i: %{http_code}\n" http://backend-service.rate-limiting-lab.svc.cluster.local
+  sleep 2
+done
+Subtask 3.4: Monitor and Analyze Results
+Check resource usage:
+# Check current resource usage against quotas
+oc describe quota rate-limiting-quota -n rate-limiting-lab
+
+# Check pod resource consumption
+oc top pods -n rate-limiting-lab
+Analyze rate limiting metrics:
+# Check rate limiting service status
+oc get pods -n istio-system | grep ratelimit
+
+# View rate limiting configuration
+oc get configmap ratelimit-config -n istio-system -o yaml
+Generate a summary report:
+cat << 'EOF' > generate-report.sh
+#!/bin/bash
+
+echo "=== Rate Limiting and Quota Test Report ==="
+echo "Generated at: $(date)"
+echo ""
+
+echo "=== Resource Quota Status ==="
+oc describe quota rate-limiting-quota -n rate-limiting-lab | grep -A 10 "Resource"
+echo ""
+
+echo "=== Pod Status ==="
+oc get pods -n rate-limiting-lab -o wide
+echo ""
+
+echo "=== Service Status ==="
+oc get svc -n rate-limiting-lab
+echo ""
+
+echo "=== Rate Limiting Service Status ==="
+oc get pods -n istio-system | grep -E "(redis|ratelimit)"
+echo ""
+
+echo "=== Network Policies ==="
+oc get networkpolicy -n rate-limiting-lab
+echo ""
+
+if [ -f "load-test-results.csv" ]; then
+  echo "=== Load Test Summary ==="
+  echo "Total requests: $(wc -l < load-test-results.csv)"
+  echo "Successful requests (200): $(grep ',200,' load-test-results.csv | wc -l)"
+  echo "Rate limited requests (429): $(grep ',429,' load-test-results.csv | wc -l)"
+  echo "Other errors: $(grep -v ',200,' load-test-results.csv | grep -v ',429,' | wc -l)"
+fi
+
+echo ""
+echo "=== Report Complete ==="
+EOF
+
+chmod +x generate-report.sh
+./generate-report.sh
+Troubleshooting Common Issues
+Issue 1: Rate Limiting Not Working
+Symptoms: All requests return HTTP 200, no rate limiting observed
+
+Solutions:
+
+Check EnvoyFilter configuration:
+oc get envoyfilter -n istio-system
+oc describe envoyfilter filter-ratelimit -n istio-system
+Verify rate limiting service is running:
+oc get pods -n istio-system | grep ratelimit
+oc logs deployment/ratelimit -n istio-system
+Check sidecar injection:
+oc get pods -n rate-limiting-lab -o jsonpath='{.items[*].spec.containers[*].name}'
+Issue 2: Quota Not Enforcing
+Symptoms: Resource usage exceeds defined quotas
+
+Solutions:
+
+Verify quota is applied:
+oc get quota -n rate-limiting-lab
+oc describe quota rate-limiting-quota -n rate-limiting-lab
+Check limit ranges:
+oc get limitrange -n rate-limiting-lab
+oc describe limitrange rate-limiting-limits -n rate-limiting-lab
+Issue 3: Network Connectivity Issues
+Symptoms: Requests fail with connection errors
+
+Solutions:
+
+Check network policies:
+oc get networkpolicy -n rate-limiting-lab
+oc describe networkpolicy backend-service-policy -n rate-limiting-lab
+Verify service mesh injection:
+oc get namespace rate-limiting-lab --show-labels
+Cleanup
+To clean up the lab environment:
+
+# Delete the lab namespace
+oc delete namespace rate-limiting-lab
+
+# Remove rate limiting components from istio-system
+oc delete configmap ratelimit-config -n istio-system
+oc delete deployment ratelimit redis -n istio-system
+oc delete service ratelimit redis -n istio-system
+oc delete envoyfilter filter-ratelimit filter-ratelimit-svc -n istio-system
+
+# Remove local files
+rm -f *.yaml *.sh *.csv
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Configured rate limiting for service endpoints using Istio's EnvoyFilter and a dedicated rate limiting service
+Implemented resource quotas at both the application and namespace levels to control resource consumption
+Tested rate limiting mechanisms through various load testing scenarios and observed their behavior
+Monitored traffic flow and analyzed the effectiveness of rate limiting and quota policies
+Troubleshot common issues related to rate limiting and quota enforcement
+Why This Matters: Rate limiting and quotas are critical components of a production-ready microservices architecture. They help:
+
+Prevent service abuse and protect against denial-of-service attacks
+Ensure fair resource usage among different clients and services
+Maintain system stability under high load conditions
+Control costs by limiting resource consumption
+Improve overall system reliability and user experience
+These skills are essential for the Red Hat Certified Specialist in Building Resilient Microservices exam and for managing production OpenShift Service Mesh environments. The techniques you've learned can be applied to real-world scenarios where you need to protect services from overload and ensure equitable resource distribution across your microservices ecosystem.
+
+The combination of Istio's traffic management capabilities with Kubernetes resource management provides a powerful toolkit for building resilient, scalable microservices that can handle varying load patterns while maintaining performance and availability standards.

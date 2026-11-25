@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ratelimit-config
+  namespace: istio-system
+data:
+  config.yaml: |
+    domain: backend-service-ratelimit
+    descriptors:
+      - key: header_match
+        value: "backend-service"
+        rate_limit:
+          unit: minute
+          requests_per_unit: 10
+      - key: generic_key
+        value: "backend-service"
+        rate_limit:
+          unit: minute
+          requests_per_unit: 5
