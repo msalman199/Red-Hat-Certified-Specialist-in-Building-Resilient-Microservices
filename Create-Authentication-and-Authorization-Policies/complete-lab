@@ -1,0 +1,420 @@
+Lab 17: Create Authentication and Authorization Policies
+Objectives
+By the end of this lab, students will be able to:
+
+Understand the fundamentals of authentication and authorization in OpenShift Service Mesh
+Configure authentication policies to secure workloads using mutual TLS (mTLS)
+Implement service-to-service authorization policies using Istio security features
+Test and validate authentication and authorization flows between microservices
+Troubleshoot common authentication and authorization issues in a service mesh environment
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with OpenShift Service Mesh (Istio) fundamentals
+Knowledge of YAML configuration files
+Understanding of microservices architecture concepts
+Basic command-line interface (CLI) skills
+Completed previous OpenShift Service Mesh labs or equivalent experience
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides Linux-based cloud machines with OpenShift Service Mesh pre-installed. Simply click Start Lab to begin - no need to build your own VM or install additional software.
+
+Your lab environment includes:
+
+OpenShift cluster with Service Mesh operator installed
+Istio control plane configured
+Sample microservices applications
+Command-line tools (oc, kubectl, istioctl)
+Task 1: Set Up Authentication Policies for Workloads
+Subtask 1.1: Deploy Sample Applications
+First, we'll deploy sample applications that will be used throughout this lab.
+
+Create a new project namespace:
+oc new-project bookinfo-auth
+Label the namespace for Istio injection:
+oc label namespace bookinfo-auth istio-injection=enabled
+Deploy the Bookinfo sample application:
+oc apply -f https://raw.githubusercontent.com/istio/istio/release-1.19/samples/bookinfo/platform/kube/bookinfo.yaml -n bookinfo-auth
+Verify the deployment:
+oc get pods -n bookinfo-auth
+Wait until all pods are in Running status with 2/2 containers ready (indicating both the application container and Istio sidecar are running).
+
+Subtask 1.2: Configure Mutual TLS (mTLS) Authentication
+Create a PeerAuthentication policy to enforce strict mTLS:
+cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: bookinfo-auth
+spec:
+  mtls:
+    mode: STRICT
+EOF
+Verify the PeerAuthentication policy:
+oc get peerauthentication -n bookinfo-auth
+Create a mesh-wide PeerAuthentication policy:
+cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: istio-system
+spec:
+  mtls:
+    mode: STRICT
+EOF
+Subtask 1.3: Configure Request Authentication with JWT
+Create a RequestAuthentication policy for JWT validation:
+cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+  namespace: bookinfo-auth
+spec:
+  selector:
+    matchLabels:
+      app: productpage
+  jwtRules:
+  - issuer: "testing@secure.istio.io"
+    jwksUri: "https://raw.githubusercontent.com/istio/istio/release-1.19/security/tools/jwt/samples/jwks.json"
+EOF
+Verify the RequestAuthentication policy:
+oc get requestauthentication -n bookinfo-auth
+Task 2: Configure Service-to-Service Authorization Policies
+Subtask 2.1: Create Basic Authorization Policies
+Create a deny-all authorization policy as a baseline:
+cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: bookinfo-auth
+spec:
+  {}
+EOF
+Verify the policy is created:
+oc get authorizationpolicy -n bookinfo-auth
+Test the deny-all policy by attempting to access the application:
+# Get the productpage service
+oc get svc productpage -n bookinfo-auth
+
+# Try to access the service (this should fail)
+oc exec -n bookinfo-auth deployment/ratings-v1 -c ratings -- curl -s productpage:9080/productpage
+Subtask 2.2: Configure Specific Service Authorization
+Create an authorization policy to allow productpage to access other services:
+cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: productpage-viewer
+  namespace: bookinfo-auth
+spec:
+  selector:
+    matchLabels:
+      app: productpage
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/bookinfo-auth/sa/bookinfo-productpage"]
+  - to:
+    - operation:
+        methods: ["GET"]
+EOF
+Create authorization policy for details service:
+cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: details-viewer
+  namespace: bookinfo-auth
+spec:
+  selector:
+    matchLabels:
+      app: details
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/bookinfo-auth/sa/bookinfo-productpage"]
+    to:
+    - operation:
+        methods: ["GET"]
+EOF
+Create authorization policy for reviews service:
+cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: reviews-viewer
+  namespace: bookinfo-auth
+spec:
+  selector:
+    matchLabels:
+      app: reviews
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/bookinfo-auth/sa/bookinfo-productpage"]
+    to:
+    - operation:
+        methods: ["GET"]
+EOF
+Create authorization policy for ratings service:
+cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: ratings-viewer
+  namespace: bookinfo-auth
+spec:
+  selector:
+    matchLabels:
+      app: ratings
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/bookinfo-auth/sa/bookinfo-reviews"]
+    to:
+    - operation:
+        methods: ["GET"]
+EOF
+Subtask 2.3: Configure JWT-based Authorization
+Create an authorization policy that requires valid JWT tokens:
+cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: require-jwt
+  namespace: bookinfo-auth
+spec:
+  selector:
+    matchLabels:
+      app: productpage
+  rules:
+  - from:
+    - source:
+        requestPrincipals: ["testing@secure.istio.io/testing@secure.istio.io"]
+EOF
+Create a more granular JWT-based policy with custom claims:
+cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: jwt-claims-auth
+  namespace: bookinfo-auth
+spec:
+  selector:
+    matchLabels:
+      app: productpage
+  rules:
+  - when:
+    - key: request.auth.claims[iss]
+      values: ["testing@secure.istio.io"]
+    - key: request.auth.claims[sub]
+      values: ["testing@secure.istio.io"]
+EOF
+Task 3: Test Authentication and Authorization Flow
+Subtask 3.1: Test mTLS Authentication
+Verify mTLS is working by checking certificate information:
+# Check if mTLS is enabled
+istioctl authn tls-check productpage.bookinfo-auth.svc.cluster.local
+Test service-to-service communication with mTLS:
+# Execute from within the mesh
+oc exec -n bookinfo-auth deployment/productpage-v1 -c productpage -- curl -s details:9080/details/0
+Verify mTLS certificates are being used:
+# Check proxy configuration
+istioctl proxy-config cluster productpage-v1-<pod-suffix>.bookinfo-auth --fqdn details.bookinfo-auth.svc.cluster.local
+Subtask 3.2: Test Authorization Policies
+Test that unauthorized access is blocked:
+# This should fail due to authorization policies
+oc exec -n bookinfo-auth deployment/details-v1 -c details -- curl -s productpage:9080/productpage
+Test authorized access:
+# This should succeed
+oc exec -n bookinfo-auth deployment/productpage-v1 -c productpage -- curl -s details:9080/details/0
+Verify authorization policy logs:
+# Check access logs for authorization decisions
+oc logs -n bookinfo-auth deployment/productpage-v1 -c istio-proxy | grep -i "rbac"
+Subtask 3.3: Test JWT Authentication
+Generate a valid JWT token for testing:
+# Create a script to generate JWT token
+cat <<EOF > generate-jwt.py
+#!/usr/bin/env python3
+import json
+import jwt
+import time
+
+# JWT payload
+payload = {
+    'iss': 'testing@secure.istio.io',
+    'sub': 'testing@secure.istio.io',
+    'aud': 'productpage',
+    'exp': int(time.time()) + 3600,  # 1 hour from now
+    'iat': int(time.time())
+}
+
+# Generate token (using 'secret' as key for demo purposes)
+token = jwt.encode(payload, 'secret', algorithm='HS256')
+print(token)
+EOF
+
+python3 generate-jwt.py > jwt-token.txt
+Test access without JWT token:
+# Remove the require-jwt policy temporarily to test
+oc delete authorizationpolicy require-jwt -n bookinfo-auth
+
+# Create a test pod to make external requests
+oc run test-client --image=curlimages/curl:latest --rm -it --restart=Never -n bookinfo-auth -- sh
+
+# Inside the test pod, try to access without JWT
+curl -s productpage:9080/productpage
+Test access with valid JWT token:
+# Re-apply the JWT requirement policy
+oc apply -f - <<EOF
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: require-jwt
+  namespace: bookinfo-auth
+spec:
+  selector:
+    matchLabels:
+      app: productpage
+  rules:
+  - from:
+    - source:
+        requestPrincipals: ["testing@secure.istio.io/testing@secure.istio.io"]
+EOF
+
+# Test with JWT token
+TOKEN=$(cat jwt-token.txt)
+oc exec -n bookinfo-auth deployment/productpage-v1 -c productpage -- curl -H "Authorization: Bearer $TOKEN" -s productpage:9080/productpage
+Subtask 3.4: Monitor and Debug Authentication/Authorization
+Check Istio proxy configuration:
+# View authentication policies
+istioctl proxy-config listeners productpage-v1-<pod-suffix>.bookinfo-auth --port 9080 -o json
+
+# View authorization policies
+istioctl proxy-config rbac productpage-v1-<pod-suffix>.bookinfo-auth
+Enable access logging for debugging:
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: istio
+  namespace: istio-system
+data:
+  mesh: |
+    accessLogFile: /dev/stdout
+    defaultConfig:
+      proxyStatsMatcher:
+        inclusionRegexps:
+        - ".*circuit_breakers.*"
+        - ".*upstream_rq_retry.*"
+        - ".*_cx_.*"
+EOF
+Restart pods to apply logging configuration:
+oc rollout restart deployment/productpage-v1 -n bookinfo-auth
+oc rollout restart deployment/details-v1 -n bookinfo-auth
+oc rollout restart deployment/reviews-v1 -n bookinfo-auth
+oc rollout restart deployment/ratings-v1 -n bookinfo-auth
+Monitor access logs:
+# Watch access logs in real-time
+oc logs -f deployment/productpage-v1 -c istio-proxy -n bookinfo-auth
+Subtask 3.5: Test Policy Combinations
+Create a complex authorization policy combining multiple conditions:
+cat <<EOF | oc apply -f -
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: complex-auth
+  namespace: bookinfo-auth
+spec:
+  selector:
+    matchLabels:
+      app: productpage
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/bookinfo-auth/sa/bookinfo-productpage"]
+    to:
+    - operation:
+        methods: ["GET", "POST"]
+        paths: ["/productpage*"]
+    when:
+    - key: source.ip
+      notValues: ["192.168.1.100"]
+  - from:
+    - source:
+        requestPrincipals: ["testing@secure.istio.io/testing@secure.istio.io"]
+    to:
+    - operation:
+        methods: ["GET"]
+    when:
+    - key: request.headers[user-agent]
+      values: ["*curl*"]
+EOF
+Test the complex policy:
+# Test with different user agents and methods
+oc exec -n bookinfo-auth deployment/productpage-v1 -c productpage -- curl -H "User-Agent: curl/7.68.0" -s productpage:9080/productpage
+
+# Test with different HTTP methods
+oc exec -n bookinfo-auth deployment/productpage-v1 -c productpage -- curl -X POST -s productpage:9080/productpage
+Troubleshooting Common Issues
+Issue 1: mTLS Connection Failures
+Symptoms: Services cannot communicate, connection refused errors
+
+Solution:
+
+# Check if all pods have Istio sidecars
+oc get pods -n bookinfo-auth -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].name}{"\n"}{end}'
+
+# Verify PeerAuthentication policies
+oc get peerauthentication -A
+
+# Check proxy status
+istioctl proxy-status
+Issue 2: Authorization Policy Not Working
+Symptoms: Requests are allowed when they should be denied
+
+Solution:
+
+# Verify policy syntax and selectors
+oc describe authorizationpolicy -n bookinfo-auth
+
+# Check if policies are applied to correct workloads
+istioctl proxy-config rbac <pod-name>.<namespace>
+
+# Verify service account names
+oc get sa -n bookinfo-auth
+Issue 3: JWT Validation Failures
+Symptoms: Valid JWT tokens are being rejected
+
+Solution:
+
+# Verify RequestAuthentication configuration
+oc describe requestauthentication -n bookinfo-auth
+
+# Check if JWKS endpoint is accessible
+curl -s https://raw.githubusercontent.com/istio/istio/release-1.19/security/tools/jwt/samples/jwks.json
+
+# Validate JWT token format and claims
+echo $TOKEN | base64 -d
+Conclusion
+In this comprehensive lab, you have successfully:
+
+Implemented authentication policies using mutual TLS (mTLS) to secure service-to-service communication within the OpenShift Service Mesh
+Configured authorization policies to control access between microservices based on service identities, HTTP methods, and custom conditions
+Set up JWT-based authentication for end-user requests with custom claims validation
+Tested various authentication and authorization scenarios to ensure policies work as expected
+Learned troubleshooting techniques for common authentication and authorization issues
+Why This Matters: Authentication and authorization are critical security components in microservices architectures. By implementing these policies in OpenShift Service Mesh, you ensure that:
+
+Only authenticated services can communicate with each other
+Access is granted based on the principle of least privilege
+End-user requests are properly validated and authorized
+Security policies are consistently enforced across all services
+Compliance requirements are met through proper access controls
+These skills are essential for building secure, production-ready microservices applications and are directly applicable to the Red Hat Certified Specialist in Building Resilient Microservices exam. The hands-on experience gained in this lab provides practical knowledge of implementing zero-trust security models in cloud-native environments.
+
+Next Steps: Consider exploring advanced topics such as custom authentication providers, integration with external identity systems, and implementing fine-grained authorization policies based on user roles and attributes.
