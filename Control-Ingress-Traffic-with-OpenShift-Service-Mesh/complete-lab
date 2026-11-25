@@ -1,0 +1,571 @@
+Lab 13: Control Ingress Traffic with OpenShift Service Mesh
+Objectives
+By the end of this lab, students will be able to:
+
+Configure an ingress gateway to control external traffic entering the service mesh
+Implement routing rules for external traffic management
+Test external access to services through the ingress gateway
+Monitor inbound traffic patterns and security policies
+Apply traffic management policies for external-facing services
+Troubleshoot ingress gateway connectivity issues
+Prerequisites
+Before starting this lab, students should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with OpenShift Container Platform
+Knowledge of Istio service mesh fundamentals
+Experience with YAML configuration files
+Understanding of networking concepts (DNS, HTTP routing)
+Completion of previous OpenShift Service Mesh labs or equivalent experience
+Lab Environment Setup
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift and Istio service mesh already installed. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+OpenShift Container Platform 4.12+
+Red Hat OpenShift Service Mesh (Istio) 2.4+
+Pre-configured service mesh control plane
+Sample applications for testing
+Command-line tools (oc, kubectl, istioctl)
+Task 1: Configure Ingress Gateway with Routing Rules
+Subtask 1.1: Verify Service Mesh Installation
+First, let's verify that the service mesh is properly installed and running.
+
+Check the service mesh control plane status:
+oc get pods -n istio-system
+Verify the ingress gateway deployment:
+oc get pods -n istio-system -l app=istio-ingressgateway
+Check the ingress gateway service:
+oc get svc -n istio-system istio-ingressgateway
+Expected output should show the ingress gateway pod running and the service with external IP or LoadBalancer type.
+
+Subtask 1.2: Deploy Sample Application
+We'll deploy a sample bookinfo application to demonstrate ingress traffic control.
+
+Create a new project for the application:
+oc new-project bookinfo-ingress
+Enable automatic sidecar injection:
+oc label namespace bookinfo-ingress istio-injection=enabled
+Deploy the bookinfo application:
+cat << 'EOF' > bookinfo-app.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: productpage
+  labels:
+    app: productpage
+    service: productpage
+spec:
+  ports:
+  - port: 9080
+    name: http
+  selector:
+    app: productpage
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bookinfo-productpage
+  labels:
+    account: productpage
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: productpage-v1
+  labels:
+    app: productpage
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: productpage
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: productpage
+        version: v1
+    spec:
+      serviceAccountName: bookinfo-productpage
+      containers:
+      - name: productpage
+        image: docker.io/istio/examples-bookinfo-productpage-v1:1.17.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9080
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        securityContext:
+          runAsUser: 1000
+      volumes:
+      - name: tmp
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: details
+  labels:
+    app: details
+    service: details
+spec:
+  ports:
+  - port: 9080
+    name: http
+  selector:
+    app: details
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bookinfo-details
+  labels:
+    account: details
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: details-v1
+  labels:
+    app: details
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: details
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: details
+        version: v1
+    spec:
+      serviceAccountName: bookinfo-details
+      containers:
+      - name: details
+        image: docker.io/istio/examples-bookinfo-details-v1:1.17.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 9080
+        securityContext:
+          runAsUser: 1000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviews
+  labels:
+    app: reviews
+    service: reviews
+spec:
+  ports:
+  - port: 9080
+    name: http
+  selector:
+    app: reviews
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: bookinfo-reviews
+  labels:
+    account: reviews
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reviews-v1
+  labels:
+    app: reviews
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reviews
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: reviews
+        version: v1
+    spec:
+      serviceAccountName: bookinfo-reviews
+      containers:
+      - name: reviews
+        image: docker.io/istio/examples-bookinfo-reviews-v1:1.17.0
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: LOG_DIR
+          value: "/tmp/logs"
+        ports:
+        - containerPort: 9080
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: wlp-output
+          mountPath: /opt/ibm/wlp/output
+        securityContext:
+          runAsUser: 1000
+      volumes:
+      - name: wlp-output
+        emptyDir: {}
+      - name: tmp
+        emptyDir: {}
+EOF
+
+oc apply -f bookinfo-app.yaml
+Wait for all pods to be ready:
+oc get pods -w
+Press Ctrl+C when all pods show STATUS as Running and READY as 1/1.
+
+Subtask 1.3: Create Gateway Configuration
+Now we'll create a Gateway resource to define how external traffic enters the mesh.
+
+Create the Gateway configuration:
+cat << 'EOF' > bookinfo-gateway.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: bookinfo-gateway
+  namespace: bookinfo-ingress
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - bookinfo.example.com
+    - "*"
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: bookinfo-credential
+    hosts:
+    - bookinfo.example.com
+EOF
+
+oc apply -f bookinfo-gateway.yaml
+Verify the Gateway was created:
+oc get gateway -n bookinfo-ingress
+Subtask 1.4: Configure Virtual Service for Routing
+Create a VirtualService to define routing rules for incoming traffic.
+
+Create the VirtualService configuration:
+cat << 'EOF' > bookinfo-virtualservice.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: bookinfo-vs
+  namespace: bookinfo-ingress
+spec:
+  hosts:
+  - bookinfo.example.com
+  - "*"
+  gateways:
+  - bookinfo-gateway
+  http:
+  - match:
+    - uri:
+        exact: /productpage
+    - uri:
+        prefix: /static
+    - uri:
+        exact: /login
+    - uri:
+        exact: /logout
+    - uri:
+        prefix: /api/v1/products
+    route:
+    - destination:
+        host: productpage
+        port:
+          number: 9080
+  - match:
+    - uri:
+        prefix: /health
+    route:
+    - destination:
+        host: productpage
+        port:
+          number: 9080
+    headers:
+      response:
+        add:
+          x-custom-header: "health-check"
+EOF
+
+oc apply -f bookinfo-virtualservice.yaml
+Verify the VirtualService was created:
+oc get virtualservice -n bookinfo-ingress
+Task 2: Test External Access to Services
+Subtask 2.1: Get Ingress Gateway External Access Information
+Get the ingress gateway external IP or hostname:
+export INGRESS_HOST=$(oc get route -n istio-system istio-ingressgateway -o jsonpath='{.spec.host}')
+echo "Ingress Host: $INGRESS_HOST"
+Get the ingress gateway ports:
+export INGRESS_PORT=$(oc get route -n istio-system istio-ingressgateway -o jsonpath='{.spec.port.targetPort}')
+export SECURE_INGRESS_PORT=443
+echo "HTTP Port: $INGRESS_PORT"
+echo "HTTPS Port: $SECURE_INGRESS_PORT"
+Set the gateway URL:
+export GATEWAY_URL=$INGRESS_HOST:$INGRESS_PORT
+echo "Gateway URL: $GATEWAY_URL"
+Subtask 2.2: Test HTTP Access
+Test basic connectivity to the productpage:
+curl -I http://$GATEWAY_URL/productpage
+Expected output should show HTTP 200 OK response.
+
+Test the full productpage response:
+curl -s http://$GATEWAY_URL/productpage | grep -o "<title>.*</title>"
+Test API endpoints:
+curl -s http://$GATEWAY_URL/api/v1/products | head -20
+Test health endpoint with custom header:
+curl -I http://$GATEWAY_URL/health
+Look for the custom header x-custom-header: health-check in the response.
+
+Subtask 2.3: Test Different Host Headers
+Test with specific host header:
+curl -H "Host: bookinfo.example.com" -I http://$GATEWAY_URL/productpage
+Test with different host header (should still work due to wildcard):
+curl -H "Host: test.example.com" -I http://$GATEWAY_URL/productpage
+Subtask 2.4: Create Advanced Routing Rules
+Let's create more sophisticated routing rules to demonstrate advanced ingress control.
+
+Create a new version of the VirtualService with advanced routing:
+cat << 'EOF' > bookinfo-advanced-vs.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: bookinfo-advanced-vs
+  namespace: bookinfo-ingress
+spec:
+  hosts:
+  - bookinfo.example.com
+  - "*"
+  gateways:
+  - bookinfo-gateway
+  http:
+  - match:
+    - headers:
+        user-agent:
+          regex: ".*Mobile.*"
+      uri:
+        prefix: /
+    route:
+    - destination:
+        host: productpage
+        port:
+          number: 9080
+    headers:
+      response:
+        add:
+          x-device-type: "mobile"
+  - match:
+    - uri:
+        exact: /productpage
+    - uri:
+        prefix: /static
+    - uri:
+        exact: /login
+    - uri:
+        exact: /logout
+    - uri:
+        prefix: /api/v1/products
+    route:
+    - destination:
+        host: productpage
+        port:
+          number: 9080
+    timeout: 10s
+    retries:
+      attempts: 3
+      perTryTimeout: 3s
+  - match:
+    - uri:
+        prefix: /admin
+    route:
+    - destination:
+        host: productpage
+        port:
+          number: 9080
+    headers:
+      request:
+        add:
+          x-admin-access: "true"
+EOF
+
+oc apply -f bookinfo-advanced-vs.yaml
+Test mobile user agent routing:
+curl -H "User-Agent: Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15E148 Safari/604.1" -I http://$GATEWAY_URL/productpage
+Look for the x-device-type: mobile header in the response.
+
+Test admin endpoint with custom header:
+curl -H "x-admin-access: true" -I http://$GATEWAY_URL/admin
+Task 3: Monitor Inbound Traffic and Policies
+Subtask 3.1: Enable Traffic Monitoring
+Check if Kiali is installed:
+oc get pods -n istio-system -l app=kiali
+Access Kiali dashboard (if available):
+oc get route -n istio-system kiali
+Generate traffic for monitoring:
+for i in {1..50}; do
+  curl -s http://$GATEWAY_URL/productpage > /dev/null
+  echo "Request $i completed"
+  sleep 1
+done
+Subtask 3.2: Monitor with Command Line Tools
+Check ingress gateway logs:
+oc logs -n istio-system -l app=istio-ingressgateway -f --tail=20
+Run this in a separate terminal and generate traffic to see real-time logs.
+
+Check proxy statistics:
+INGRESS_POD=$(oc get pods -n istio-system -l app=istio-ingressgateway -o jsonpath='{.items[0].metadata.name}')
+oc exec -n istio-system $INGRESS_POD -- curl -s localhost:15000/stats | grep -E "(inbound|outbound|upstream_rq)"
+Check configuration dump:
+oc exec -n istio-system $INGRESS_POD -- curl -s localhost:15000/config_dump | grep -A 10 -B 10 "bookinfo"
+Subtask 3.3: Implement Security Policies
+Create an Authorization Policy for the ingress gateway:
+cat << 'EOF' > ingress-authz-policy.yaml
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: ingress-policy
+  namespace: bookinfo-ingress
+spec:
+  selector:
+    matchLabels:
+      app: productpage
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+  - to:
+    - operation:
+        methods: ["GET", "POST"]
+        paths: ["/productpage", "/api/v1/products/*", "/static/*"]
+  - when:
+    - key: request.headers[user-agent]
+      notValues: ["*bot*", "*crawler*"]
+EOF
+
+oc apply -f ingress-authz-policy.yaml
+Test the authorization policy:
+# This should work
+curl -I http://$GATEWAY_URL/productpage
+
+# This should be blocked
+curl -H "User-Agent: GoogleBot/2.1" -I http://$GATEWAY_URL/productpage
+Create a rate limiting policy:
+cat << 'EOF' > rate-limit-policy.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: EnvoyFilter
+metadata:
+  name: rate-limit-filter
+  namespace: istio-system
+spec:
+  workloadSelector:
+    labels:
+      app: istio-ingressgateway
+  configPatches:
+  - applyTo: HTTP_FILTER
+    match:
+      context: GATEWAY
+      listener:
+        filterChain:
+          filter:
+            name: "envoy.filters.network.http_connection_manager"
+    patch:
+      operation: INSERT_BEFORE
+      value:
+        name: envoy.filters.http.local_ratelimit
+        typed_config:
+          "@type": type.googleapis.com/udpa.type.v1.TypedStruct
+          type_url: type.googleapis.com/envoy.extensions.filters.http.local_ratelimit.v3.LocalRateLimit
+          value:
+            stat_prefix: http_local_rate_limiter
+            token_bucket:
+              max_tokens: 10
+              tokens_per_fill: 10
+              fill_interval: 60s
+            filter_enabled:
+              runtime_key: local_rate_limit_enabled
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+            filter_enforced:
+              runtime_key: local_rate_limit_enforced
+              default_value:
+                numerator: 100
+                denominator: HUNDRED
+EOF
+
+oc apply -f rate-limit-policy.yaml
+Subtask 3.4: Test Rate Limiting
+Generate rapid requests to test rate limiting:
+for i in {1..15}; do
+  echo "Request $i: $(curl -o /dev/null -s -w "%{http_code}" http://$GATEWAY_URL/productpage)"
+done
+You should see some requests return 429 (Too Many Requests) after the rate limit is exceeded.
+
+Subtask 3.5: Monitor Security Events
+Check for denied requests in logs:
+oc logs -n istio-system -l app=istio-ingressgateway | grep -E "(403|429|RBAC)"
+Monitor authorization policy effectiveness:
+oc exec -n istio-system $INGRESS_POD -- curl -s localhost:15000/stats | grep rbac
+Troubleshooting Tips
+Common Issues and Solutions
+Gateway not receiving traffic:
+
+Check if the Gateway selector matches the ingress gateway labels
+Verify the VirtualService is bound to the correct Gateway
+Ensure the namespace labels are correct
+503 Service Unavailable errors:
+
+Verify that the destination service exists and is running
+Check if the service selector matches the pod labels
+Ensure sidecar injection is enabled
+Certificate issues for HTTPS:
+
+Create the TLS secret in the istio-system namespace
+Verify certificate validity and format
+Check Gateway TLS configuration
+Rate limiting not working:
+
+Verify EnvoyFilter is applied to the correct workload
+Check Envoy proxy configuration dump
+Monitor rate limiting statistics
+Verification Commands
+# Check all ingress-related resources
+oc get gateway,virtualservice,authorizationpolicy -n bookinfo-ingress
+
+# Verify ingress gateway configuration
+istioctl proxy-config listeners $INGRESS_POD.istio-system
+
+# Check virtual service configuration
+istioctl proxy-config routes $INGRESS_POD.istio-system
+
+# Verify authorization policies
+istioctl proxy-config rbac $INGRESS_POD.istio-system
+Conclusion
+In this lab, you have successfully:
+
+Configured an ingress gateway to control external traffic entering your service mesh, providing a secure entry point for your applications
+Implemented sophisticated routing rules using Gateway and VirtualService resources to direct traffic based on various criteria including headers, paths, and user agents
+Tested external access to services through multiple scenarios, verifying that your ingress configuration works correctly for different types of requests
+Monitored inbound traffic patterns using logs, statistics, and proxy configuration to understand how traffic flows through your ingress gateway
+Applied security policies including authorization rules and rate limiting to protect your services from unauthorized access and abuse
+Gained hands-on experience with advanced ingress traffic management features that are essential for production service mesh deployments
+This knowledge is crucial for the Red Hat Certified Specialist in Building Resilient Microservices exam as ingress traffic control is a fundamental aspect of service mesh security and traffic management. The skills you've developed here will help you design and implement robust, secure ingress solutions for microservices architectures in enterprise environments.
+
+Understanding ingress gateway configuration is essential because it serves as the primary interface between external clients and your service mesh, making it a critical component for both security and performance. The monitoring and policy enforcement capabilities you've learned will help you maintain secure, reliable, and performant applications in production environments.

@@ -1,0 +1,59 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: bookinfo-advanced-vs
+  namespace: bookinfo-ingress
+spec:
+  hosts:
+  - bookinfo.example.com
+  - "*"
+  gateways:
+  - bookinfo-gateway
+  http:
+  - match:
+    - headers:
+        user-agent:
+          regex: ".*Mobile.*"
+      uri:
+        prefix: /
+    route:
+    - destination:
+        host: productpage
+        port:
+          number: 9080
+    headers:
+      response:
+        add:
+          x-device-type: "mobile"
+  - match:
+    - uri:
+        exact: /productpage
+    - uri:
+        prefix: /static
+    - uri:
+        exact: /login
+    - uri:
+        exact: /logout
+    - uri:
+        prefix: /api/v1/products
+    route:
+    - destination:
+        host: productpage
+        port:
+          number: 9080
+    timeout: 10s
+    retries:
+      attempts: 3
+      perTryTimeout: 3s
+  - match:
+    - uri:
+        prefix: /admin
+    route:
+    - destination:
+        host: productpage
+        port:
+          number: 9080
+    headers:
+      request:
+        add:
+          x-admin-access: "true"
