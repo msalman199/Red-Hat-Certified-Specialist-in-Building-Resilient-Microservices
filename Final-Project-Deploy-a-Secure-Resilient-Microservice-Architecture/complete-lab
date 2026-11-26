@@ -1,0 +1,998 @@
+Lab 20: Final Project: Deploy a Secure, Resilient Microservice Architecture
+Objectives
+By the end of this lab, you will be able to:
+
+Deploy a complete microservice application on OpenShift with Service Mesh
+Implement advanced traffic management patterns including canary deployments and circuit breakers
+Configure comprehensive security policies including mTLS and RBAC
+Implement resilience patterns such as retries, timeouts, and fault injection
+Monitor and observe microservice performance using distributed tracing
+Test application behavior under various failure scenarios
+Demonstrate proficiency in enterprise-grade microservice deployment patterns
+Prerequisites
+Before starting this lab, you should have:
+
+Basic understanding of Kubernetes concepts (pods, services, deployments)
+Familiarity with OpenShift CLI (oc command)
+Knowledge of microservice architecture principles
+Understanding of service mesh concepts
+Basic networking knowledge (HTTP, TCP, load balancing)
+Experience with YAML configuration files
+Familiarity with container technologies
+Lab Environment
+Ready-to-Use Cloud Machines: Al Nafi provides pre-configured Linux-based cloud machines with OpenShift and all necessary tools installed. Simply click Start Lab to access your environment - no need to build your own VM or install software.
+
+Your lab environment includes:
+
+OpenShift 4.12+ cluster with admin access
+OpenShift Service Mesh (Istio) pre-installed
+Command-line tools (oc, kubectl, istioctl)
+Sample microservice application code
+Monitoring and observability tools
+Task 1: Deploy the Microservice Application
+Subtask 1.1: Create Project and Enable Service Mesh
+First, we'll create a new project and enable it for service mesh.
+
+# Create a new project for our microservice application
+oc new-project bookstore-app
+
+# Label the namespace to enable automatic sidecar injection
+oc label namespace bookstore-app istio-injection=enabled
+
+# Verify the label was applied
+oc get namespace bookstore-app --show-labels
+Subtask 1.2: Deploy the Database Service
+Deploy a PostgreSQL database that will serve as the backend for our bookstore application.
+
+# Create the database deployment
+cat << 'EOF' > database-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database
+  namespace: bookstore-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: database
+        version: v1
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: bookstore
+        - name: POSTGRES_USER
+          value: bookuser
+        - name: POSTGRES_PASSWORD
+          value: bookpass123
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: database
+  namespace: bookstore-app
+  labels:
+    app: database
+spec:
+  ports:
+  - port: 5432
+    name: postgres
+  selector:
+    app: database
+EOF
+
+# Apply the database configuration
+oc apply -f database-deployment.yaml
+Subtask 1.3: Deploy the Books Service
+Deploy the books microservice that manages book inventory.
+
+# Create the books service deployment
+cat << 'EOF' > books-service.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: books-service
+  namespace: bookstore-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: books-service
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: books-service
+        version: v1
+    spec:
+      containers:
+      - name: books-service
+        image: quay.io/redhat-training/books-service:1.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DATABASE_URL
+          value: "postgresql://bookuser:bookpass123@database:5432/bookstore"
+        - name: SERVICE_NAME
+          value: "books-service"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: books-service
+  namespace: bookstore-app
+  labels:
+    app: books-service
+spec:
+  ports:
+  - port: 8080
+    name: http
+  selector:
+    app: books-service
+EOF
+
+# Apply the books service configuration
+oc apply -f books-service.yaml
+Subtask 1.4: Deploy the Reviews Service
+Deploy the reviews microservice with multiple versions for testing.
+
+# Create reviews service v1
+cat << 'EOF' > reviews-service-v1.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reviews-service-v1
+  namespace: bookstore-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reviews-service
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: reviews-service
+        version: v1
+    spec:
+      containers:
+      - name: reviews-service
+        image: quay.io/redhat-training/reviews-service:1.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SERVICE_VERSION
+          value: "v1"
+        - name: STAR_COLOR
+          value: "black"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reviews-service-v2
+  namespace: bookstore-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reviews-service
+      version: v2
+  template:
+    metadata:
+      labels:
+        app: reviews-service
+        version: v2
+    spec:
+      containers:
+      - name: reviews-service
+        image: quay.io/redhat-training/reviews-service:2.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SERVICE_VERSION
+          value: "v2"
+        - name: STAR_COLOR
+          value: "red"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reviews-service
+  namespace: bookstore-app
+  labels:
+    app: reviews-service
+spec:
+  ports:
+  - port: 8080
+    name: http
+  selector:
+    app: reviews-service
+EOF
+
+# Apply the reviews service configuration
+oc apply -f reviews-service-v1.yaml
+Subtask 1.5: Deploy the Frontend Service
+Deploy the frontend service that serves the web interface.
+
+# Create the frontend service
+cat << 'EOF' > frontend-service.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: bookstore-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: frontend
+        version: v1
+    spec:
+      containers:
+      - name: frontend
+        image: quay.io/redhat-training/bookstore-frontend:1.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: BOOKS_SERVICE_URL
+          value: "http://books-service:8080"
+        - name: REVIEWS_SERVICE_URL
+          value: "http://reviews-service:8080"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: bookstore-app
+  labels:
+    app: frontend
+spec:
+  ports:
+  - port: 8080
+    name: http
+  selector:
+    app: frontend
+EOF
+
+# Apply the frontend service configuration
+oc apply -f frontend-service.yaml
+Subtask 1.6: Verify Deployment
+Check that all services are running correctly.
+
+# Check all pods are running
+oc get pods -n bookstore-app
+
+# Check services
+oc get services -n bookstore-app
+
+# Verify sidecar injection
+oc get pods -n bookstore-app -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].name}{"\n"}{end}'
+Task 2: Implement Traffic Management
+Subtask 2.1: Create Gateway and Virtual Service
+Configure ingress traffic management for the application.
+
+# Create the gateway for external traffic
+cat << 'EOF' > bookstore-gateway.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: bookstore-gateway
+  namespace: bookstore-app
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - bookstore.example.com
+    - "*"
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: bookstore-vs
+  namespace: bookstore-app
+spec:
+  hosts:
+  - bookstore.example.com
+  - "*"
+  gateways:
+  - bookstore-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /
+    route:
+    - destination:
+        host: frontend
+        port:
+          number: 8080
+EOF
+
+# Apply the gateway configuration
+oc apply -f bookstore-gateway.yaml
+Subtask 2.2: Implement Canary Deployment
+Configure traffic splitting between different versions of the reviews service.
+
+# Create destination rules for version-based routing
+cat << 'EOF' > reviews-destination-rule.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: reviews-destination-rule
+  namespace: bookstore-app
+spec:
+  host: reviews-service
+  subsets:
+  - name: v1
+    labels:
+      version: v1
+  - name: v2
+    labels:
+      version: v2
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews-vs
+  namespace: bookstore-app
+spec:
+  hosts:
+  - reviews-service
+  http:
+  - match:
+    - headers:
+        user-type:
+          exact: premium
+    route:
+    - destination:
+        host: reviews-service
+        subset: v2
+      weight: 100
+  - route:
+    - destination:
+        host: reviews-service
+        subset: v1
+      weight: 80
+    - destination:
+        host: reviews-service
+        subset: v2
+      weight: 20
+EOF
+
+# Apply the traffic management rules
+oc apply -f reviews-destination-rule.yaml
+Subtask 2.3: Configure Load Balancing
+Implement advanced load balancing strategies.
+
+# Update destination rule with load balancing configuration
+cat << 'EOF' > books-destination-rule.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: books-destination-rule
+  namespace: bookstore-app
+spec:
+  host: books-service
+  trafficPolicy:
+    loadBalancer:
+      simple: LEAST_CONN
+    connectionPool:
+      tcp:
+        maxConnections: 10
+      http:
+        http1MaxPendingRequests: 10
+        maxRequestsPerConnection: 2
+    outlierDetection:
+      consecutiveErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+EOF
+
+# Apply the load balancing configuration
+oc apply -f books-destination-rule.yaml
+Task 3: Implement Security Features
+Subtask 3.1: Enable Mutual TLS
+Configure automatic mutual TLS for service-to-service communication.
+
+# Create PeerAuthentication for strict mTLS
+cat << 'EOF' > peer-authentication.yaml
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: bookstore-app
+spec:
+  mtls:
+    mode: STRICT
+EOF
+
+# Apply the mTLS configuration
+oc apply -f peer-authentication.yaml
+
+# Verify mTLS is working
+istioctl authn tls-check frontend.bookstore-app.svc.cluster.local
+Subtask 3.2: Implement Authorization Policies
+Create fine-grained access control policies.
+
+# Create authorization policy for the books service
+cat << 'EOF' > books-authz-policy.yaml
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: books-policy
+  namespace: bookstore-app
+spec:
+  selector:
+    matchLabels:
+      app: books-service
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/bookstore-app/sa/default"]
+    to:
+    - operation:
+        methods: ["GET", "POST"]
+  - from:
+    - source:
+        principals: ["cluster.local/ns/bookstore-app/sa/frontend-sa"]
+    to:
+    - operation:
+        methods: ["GET"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: reviews-policy
+  namespace: bookstore-app
+spec:
+  selector:
+    matchLabels:
+      app: reviews-service
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/bookstore-app/sa/default"]
+    to:
+    - operation:
+        methods: ["GET"]
+    when:
+    - key: request.headers[user-id]
+      notValues: [""]
+EOF
+
+# Apply authorization policies
+oc apply -f books-authz-policy.yaml
+Subtask 3.3: Configure Request Authentication
+Implement JWT token validation for external requests.
+
+# Create RequestAuthentication for JWT validation
+cat << 'EOF' > request-authentication.yaml
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+  namespace: bookstore-app
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  jwtRules:
+  - issuer: "https://auth.bookstore.com"
+    jwksUri: "https://auth.bookstore.com/.well-known/jwks.json"
+    audiences:
+    - "bookstore-api"
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: require-jwt
+  namespace: bookstore-app
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  rules:
+  - from:
+    - source:
+        requestPrincipals: ["https://auth.bookstore.com/*"]
+    to:
+    - operation:
+        paths: ["/api/*"]
+  - to:
+    - operation:
+        paths: ["/health", "/ready", "/"]
+EOF
+
+# Apply JWT authentication
+oc apply -f request-authentication.yaml
+Task 4: Implement Resilience Patterns
+Subtask 4.1: Configure Circuit Breaker
+Implement circuit breaker pattern to handle service failures.
+
+# Update books destination rule with circuit breaker
+cat << 'EOF' > books-circuit-breaker.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: books-circuit-breaker
+  namespace: bookstore-app
+spec:
+  host: books-service
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 5
+      http:
+        http1MaxPendingRequests: 5
+        maxRequestsPerConnection: 2
+        consecutiveGatewayErrors: 3
+        interval: 30s
+        baseEjectionTime: 30s
+    outlierDetection:
+      consecutiveErrors: 3
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+      minHealthPercent: 50
+EOF
+
+# Apply circuit breaker configuration
+oc apply -f books-circuit-breaker.yaml
+Subtask 4.2: Implement Retry and Timeout Policies
+Configure automatic retries and timeouts for resilient communication.
+
+# Create virtual service with retry and timeout policies
+cat << 'EOF' > resilience-policies.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: books-resilience
+  namespace: bookstore-app
+spec:
+  hosts:
+  - books-service
+  http:
+  - route:
+    - destination:
+        host: books-service
+    timeout: 10s
+    retries:
+      attempts: 3
+      perTryTimeout: 3s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews-resilience
+  namespace: bookstore-app
+spec:
+  hosts:
+  - reviews-service
+  http:
+  - route:
+    - destination:
+        host: reviews-service
+        subset: v1
+      weight: 80
+    - destination:
+        host: reviews-service
+        subset: v2
+      weight: 20
+    timeout: 5s
+    retries:
+      attempts: 2
+      perTryTimeout: 2s
+      retryOn: 5xx,gateway-error
+EOF
+
+# Apply resilience policies
+oc apply -f resilience-policies.yaml
+Subtask 4.3: Implement Fault Injection
+Configure fault injection for testing resilience.
+
+# Create fault injection for testing
+cat << 'EOF' > fault-injection.yaml
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: books-fault-injection
+  namespace: bookstore-app
+spec:
+  hosts:
+  - books-service
+  http:
+  - match:
+    - headers:
+        test-fault:
+          exact: "delay"
+    fault:
+      delay:
+        percentage:
+          value: 50
+        fixedDelay: 5s
+    route:
+    - destination:
+        host: books-service
+  - match:
+    - headers:
+        test-fault:
+          exact: "abort"
+    fault:
+      abort:
+        percentage:
+          value: 30
+        httpStatus: 503
+    route:
+    - destination:
+        host: books-service
+  - route:
+    - destination:
+        host: books-service
+EOF
+
+# Apply fault injection (for testing only)
+oc apply -f fault-injection.yaml
+Task 5: Configure Monitoring and Observability
+Subtask 5.1: Enable Distributed Tracing
+Configure Jaeger for distributed tracing across services.
+
+# Verify Jaeger is installed
+oc get pods -n istio-system | grep jaeger
+
+# Create service monitor for custom metrics
+cat << 'EOF' > service-monitor.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: bookstore-metrics
+  namespace: bookstore-app
+spec:
+  selector:
+    matchLabels:
+      app: books-service
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: reviews-metrics
+  namespace: bookstore-app
+spec:
+  selector:
+    matchLabels:
+      app: reviews-service
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+EOF
+
+# Apply service monitors
+oc apply -f service-monitor.yaml
+Subtask 5.2: Configure Custom Metrics
+Create custom telemetry for business metrics.
+
+# Create telemetry configuration
+cat << 'EOF' > custom-telemetry.yaml
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: bookstore-metrics
+  namespace: bookstore-app
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: ALL_METRICS
+      tagOverrides:
+        request_id:
+          value: "%{REQUEST_ID}"
+        user_type:
+          value: "%{REQUEST_HEADERS['user-type']}"
+---
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: access-logging
+  namespace: bookstore-app
+spec:
+  accessLogging:
+  - providers:
+    - name: otel
+EOF
+
+# Apply telemetry configuration
+oc apply -f custom-telemetry.yaml
+Subtask 5.3: Create Dashboards
+Set up monitoring dashboards for the application.
+
+# Get Grafana route
+oc get route grafana -n istio-system
+
+# Create custom dashboard configmap
+cat << 'EOF' > bookstore-dashboard.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bookstore-dashboard
+  namespace: istio-system
+  labels:
+    grafana_dashboard: "1"
+data:
+  bookstore-dashboard.json: |
+    {
+      "dashboard": {
+        "title": "Bookstore Application Metrics",
+        "panels": [
+          {
+            "title": "Request Rate",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "sum(rate(istio_requests_total{destination_service_name=~\"books-service|reviews-service|frontend\"}[5m])) by (destination_service_name)"
+              }
+            ]
+          },
+          {
+            "title": "Error Rate",
+            "type": "graph",
+            "targets": [
+              {
+                "expr": "sum(rate(istio_requests_total{destination_service_name=~\"books-service|reviews-service|frontend\",response_code!~\"2..\"}[5m])) by (destination_service_name)"
+              }
+            ]
+          }
+        ]
+      }
+    }
+EOF
+
+# Apply dashboard
+oc apply -f bookstore-dashboard.yaml
+Task 6: Test and Validate the Implementation
+Subtask 6.1: Test Traffic Management
+Validate that traffic management features are working correctly.
+
+# Get the ingress gateway URL
+export GATEWAY_URL=$(oc get route istio-ingressgateway -n istio-system -o jsonpath='{.spec.host}')
+
+# Test basic connectivity
+curl -H "Host: bookstore.example.com" http://$GATEWAY_URL/
+
+# Test canary deployment with premium user
+curl -H "Host: bookstore.example.com" -H "user-type: premium" http://$GATEWAY_URL/reviews
+
+# Test regular user traffic distribution
+for i in {1..10}; do
+  curl -H "Host: bookstore.example.com" http://$GATEWAY_URL/reviews
+  sleep 1
+done
+Subtask 6.2: Test Security Features
+Verify that security policies are enforced.
+
+# Test mTLS enforcement
+istioctl proxy-config cluster frontend-<pod-id>.bookstore-app --fqdn books-service.bookstore-app.svc.cluster.local
+
+# Test authorization policies
+kubectl exec -n bookstore-app deployment/frontend -c frontend -- curl -s books-service:8080/books
+
+# Test without proper headers (should fail)
+kubectl exec -n bookstore-app deployment/frontend -c frontend -- curl -s reviews-service:8080/reviews
+Subtask 6.3: Test Resilience Features
+Validate circuit breaker and fault tolerance.
+
+# Test circuit breaker by generating load
+for i in {1..50}; do
+  curl -H "Host: bookstore.example.com" http://$GATEWAY_URL/books &
+done
+
+# Test fault injection
+curl -H "Host: bookstore.example.com" -H "test-fault: delay" http://$GATEWAY_URL/books
+
+curl -H "Host: bookstore.example.com" -H "test-fault: abort" http://$GATEWAY_URL/books
+
+# Monitor circuit breaker status
+istioctl proxy-config cluster frontend-<pod-id>.bookstore-app --fqdn books-service.bookstore-app.svc.cluster.local
+Subtask 6.4: Performance Testing
+Conduct load testing to validate performance under stress.
+
+# Install hey load testing tool (if not available)
+curl -L https://hey-release.s3.us-east-2.amazonaws.com/hey_linux_amd64 -o hey
+chmod +x hey
+sudo mv hey /usr/local/bin/
+
+# Run performance test
+hey -n 1000 -c 10 -H "Host: bookstore.example.com" http://$GATEWAY_URL/
+
+# Monitor metrics during load test
+watch -n 2 'oc top pods -n bookstore-app'
+Task 7: Monitor and Troubleshoot
+Subtask 7.1: Access Observability Tools
+Access and use the monitoring tools to observe application behavior.
+
+# Get Kiali dashboard URL
+oc get route kiali -n istio-system -o jsonpath='{.spec.host}'
+
+# Get Jaeger dashboard URL
+oc get route jaeger -n istio-system -o jsonpath='{.spec.host}'
+
+# Get Grafana dashboard URL
+oc get route grafana -n istio-system -o jsonpath='{.spec.host}'
+
+# View service mesh topology
+istioctl proxy-status
+
+# Check configuration
+istioctl analyze -n bookstore-app
+Subtask 7.2: Troubleshoot Common Issues
+Identify and resolve common service mesh issues.
+
+# Check sidecar injection
+oc get pods -n bookstore-app -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[*].name}{"\n"}{end}'
+
+# Check proxy configuration
+istioctl proxy-config routes frontend-<pod-id>.bookstore-app
+
+# View proxy logs
+oc logs -n bookstore-app deployment/frontend -c istio-proxy
+
+# Check service connectivity
+istioctl proxy-config endpoints frontend-<pod-id>.bookstore-app
+Subtask 7.3: Generate Load and Monitor
+Create sustained load to observe system behavior.
+
+# Create a load generator pod
+cat << 'EOF' > load-generator.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  namespace: bookstore-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      containers:
+      - name: load-generator
+        image: busybox
+        command: ["/bin/sh"]
+        args: ["-c", "while true; do wget -q -O- http://frontend:8080/; sleep 1; done"]
+EOF
+
+# Deploy load generator
+oc apply -f load-generator.yaml
+
+# Monitor the system under load
+watch -n 5 'oc top pods -n bookstore-app'
+Troubleshooting Tips
+Common Issues and Solutions
+Issue: Pods not starting or sidecar not injected
+
+# Solution: Check namespace labeling
+oc get namespace bookstore-app --show-labels
+oc label namespace bookstore-app istio-injection=enabled --overwrite
+Issue: Services not communicating
+
+# Solution: Check service discovery
+oc get endpoints -n bookstore-app
+istioctl proxy-config endpoints <pod-name>.bookstore-app
+Issue: mTLS connection failures
+
+# Solution: Verify peer authentication
+istioctl authn tls-check <service-name>.bookstore-app.svc.cluster.local
+Issue: Authorization policies blocking traffic
+
+# Solution: Check authorization policies
+oc get authorizationpolicy -n bookstore-app
+istioctl proxy-config rbac <pod-name>.bookstore-app
+Issue: High latency or timeouts
+
+# Solution: Check destination rules and virtual services
+istioctl proxy-config route <pod-name>.bookstore-app
+oc describe virtualservice -n bookstore-app
+Conclusion
+Congratulations! You have successfully completed the final project by deploying a comprehensive, secure, and resilient microservice architecture using OpenShift Service Mesh.
+
+What You Accomplished
+In this lab, you have:
+
+Deployed a Complete Microservice Application: Successfully deployed a multi-tier bookstore application with database, business logic, and frontend services
+Implemented Advanced Traffic Management: Configured intelligent routing, canary deployments, and load balancing strategies
+Secured Service Communication: Enabled mutual TLS, implemented authorization policies, and configured JWT authentication
+Built Resilient Systems: Implemented circuit breakers, retry policies, timeouts, and fault injection for testing
+Established Comprehensive Monitoring: Set up distributed tracing, custom metrics, and observability dashboards
+Validated System Behavior: Conducted thorough testing of all implemented features under various conditions
+Why This Matters
+This comprehensive implementation demonstrates enterprise-grade microservice deployment patterns that are essential for:
+
+Production Readiness: Your application can handle real-world traffic patterns and failure scenarios
+Security Compliance: The security measures implemented meet enterprise security requirements
+Operational Excellence: The monitoring and observability features enable effective production operations
+Business Continuity: The resilience patterns ensure service availability even during partial system failures
+Next Steps
+With these skills, you are well-prepared for:
+
+Red Hat Certified Specialist in Building Resilient Microservices certification
+Designing and implementing production microservice architectures
+Leading service mesh adoption in enterprise environments
+Troubleshooting complex distributed system issues
+The patterns and practices you've implemented in this lab form the foundation for building scalable, secure, and resilient microservice architectures in production environments.

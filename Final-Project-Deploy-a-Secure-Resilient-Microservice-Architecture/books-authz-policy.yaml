@@ -1,0 +1,42 @@
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: books-policy
+  namespace: bookstore-app
+spec:
+  selector:
+    matchLabels:
+      app: books-service
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/bookstore-app/sa/default"]
+    to:
+    - operation:
+        methods: ["GET", "POST"]
+  - from:
+    - source:
+        principals: ["cluster.local/ns/bookstore-app/sa/frontend-sa"]
+    to:
+    - operation:
+        methods: ["GET"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: reviews-policy
+  namespace: bookstore-app
+spec:
+  selector:
+    matchLabels:
+      app: reviews-service
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/bookstore-app/sa/default"]
+    to:
+    - operation:
+        methods: ["GET"]
+    when:
+    - key: request.headers[user-id]
+      notValues: [""]

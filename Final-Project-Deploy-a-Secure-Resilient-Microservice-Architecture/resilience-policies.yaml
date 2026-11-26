@@ -1,0 +1,41 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: books-resilience
+  namespace: bookstore-app
+spec:
+  hosts:
+  - books-service
+  http:
+  - route:
+    - destination:
+        host: books-service
+    timeout: 10s
+    retries:
+      attempts: 3
+      perTryTimeout: 3s
+      retryOn: 5xx,reset,connect-failure,refused-stream
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: reviews-resilience
+  namespace: bookstore-app
+spec:
+  hosts:
+  - reviews-service
+  http:
+  - route:
+    - destination:
+        host: reviews-service
+        subset: v1
+      weight: 80
+    - destination:
+        host: reviews-service
+        subset: v2
+      weight: 20
+    timeout: 5s
+    retries:
+      attempts: 2
+      perTryTimeout: 2s
+      retryOn: 5xx,gateway-error

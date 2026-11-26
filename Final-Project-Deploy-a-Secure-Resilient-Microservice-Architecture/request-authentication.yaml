@@ -1,0 +1,34 @@
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+  namespace: bookstore-app
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  jwtRules:
+  - issuer: "https://auth.bookstore.com"
+    jwksUri: "https://auth.bookstore.com/.well-known/jwks.json"
+    audiences:
+    - "bookstore-api"
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: require-jwt
+  namespace: bookstore-app
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  rules:
+  - from:
+    - source:
+        requestPrincipals: ["https://auth.bookstore.com/*"]
+    to:
+    - operation:
+        paths: ["/api/*"]
+  - to:
+    - operation:
+        paths: ["/health", "/ready", "/"]

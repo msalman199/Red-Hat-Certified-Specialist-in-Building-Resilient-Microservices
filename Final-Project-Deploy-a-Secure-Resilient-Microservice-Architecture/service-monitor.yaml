@@ -1,0 +1,27 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: bookstore-metrics
+  namespace: bookstore-app
+spec:
+  selector:
+    matchLabels:
+      app: books-service
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: reviews-metrics
+  namespace: bookstore-app
+spec:
+  selector:
+    matchLabels:
+      app: reviews-service
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s

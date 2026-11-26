@@ -1,0 +1,36 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: books-fault-injection
+  namespace: bookstore-app
+spec:
+  hosts:
+  - books-service
+  http:
+  - match:
+    - headers:
+        test-fault:
+          exact: "delay"
+    fault:
+      delay:
+        percentage:
+          value: 50
+        fixedDelay: 5s
+    route:
+    - destination:
+        host: books-service
+  - match:
+    - headers:
+        test-fault:
+          exact: "abort"
+    fault:
+      abort:
+        percentage:
+          value: 30
+        httpStatus: 503
+    route:
+    - destination:
+        host: books-service
+  - route:
+    - destination:
+        host: books-service

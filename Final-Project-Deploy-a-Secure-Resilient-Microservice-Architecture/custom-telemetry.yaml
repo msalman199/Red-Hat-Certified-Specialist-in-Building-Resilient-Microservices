@@ -1,0 +1,27 @@
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: bookstore-metrics
+  namespace: bookstore-app
+spec:
+  metrics:
+  - providers:
+    - name: prometheus
+  - overrides:
+    - match:
+        metric: ALL_METRICS
+      tagOverrides:
+        request_id:
+          value: "%{REQUEST_ID}"
+        user_type:
+          value: "%{REQUEST_HEADERS['user-type']}"
+---
+apiVersion: telemetry.istio.io/v1alpha1
+kind: Telemetry
+metadata:
+  name: access-logging
+  namespace: bookstore-app
+spec:
+  accessLogging:
+  - providers:
+    - name: otel

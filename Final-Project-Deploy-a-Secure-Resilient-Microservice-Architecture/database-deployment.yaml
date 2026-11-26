@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: database
+  namespace: bookstore-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: database
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: database
+        version: v1
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:13
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: bookstore
+        - name: POSTGRES_USER
+          value: bookuser
+        - name: POSTGRES_PASSWORD
+          value: bookpass123
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: database
+  namespace: bookstore-app
+  labels:
+    app: database
+spec:
+  ports:
+  - port: 5432
+    name: postgres
+  selector:
+    app: database

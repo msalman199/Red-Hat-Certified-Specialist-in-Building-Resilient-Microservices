@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: bookstore-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+      version: v1
+  template:
+    metadata:
+      labels:
+        app: frontend
+        version: v1
+    spec:
+      containers:
+      - name: frontend
+        image: quay.io/redhat-training/bookstore-frontend:1.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: BOOKS_SERVICE_URL
+          value: "http://books-service:8080"
+        - name: REVIEWS_SERVICE_URL
+          value: "http://reviews-service:8080"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: bookstore-app
+  labels:
+    app: frontend
+spec:
+  ports:
+  - port: 8080
+    name: http
+  selector:
+    app: frontend
